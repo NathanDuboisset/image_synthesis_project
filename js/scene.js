@@ -284,7 +284,7 @@ export async function createScene(camAspect) {
     const targetY = 0.5 * (bounds.minY + bounds.maxY);
     const color = [1.0, 0.95, 0.9];
     const angle = 0.5;
-    const baseIntensity = 0.15;
+    const baseIntensity = 0.10;
     let added = 0;
     for (const p of objLights) {
       scene.lightSources.push({

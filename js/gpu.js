@@ -70,7 +70,7 @@ export function updateMaterialBuffer(GPUApp, materials) {
 
 export function fillLightSourceStagingBuffer(GPUApp, lightSources) {
   const sizeOfLightSource = 12;
-  const useRaytracedShadows = document.getElementById('raytracedShadowsCheckbox').checked;
+  const useRaytracedShadows = document.getElementById('raytracingCheckbox').checked;
   for (let i = 0; i < lightSources.length; i++) {
     const l = lightSources[i];
     const offset = i * sizeOfLightSource;

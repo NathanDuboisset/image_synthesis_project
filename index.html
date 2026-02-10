@@ -11,21 +11,19 @@
       <canvas width="1024" height="768"></canvas>
       <p>
         <input type="checkbox" id="raytracingCheckbox">
-        <label for="raytracingCheckbox">Ray tracing</label>
-        <input type="checkbox" id="raytracedShadowsCheckbox">
-        <label for="raytracedShadowsCheckbox">Ray-traced shadows</label>
+        <label for="raytracingCheckbox">Ray tracing + shadows</label>
         <button id="render_button">Generate image</button>
         <span id="render_time_label"></span>
         <br />
-        <input type="checkbox" id="debug_render_checkbox">
+        <input type="checkbox" id="debug_render_checkbox" checked>
         <label for="debug_render_checkbox">Debug render</label>
-        <input type="checkbox" id="debug_lights_checkbox">
+        <input type="checkbox" id="debug_lights_checkbox" checked>
         <label for="debug_lights_checkbox">Debug lights</label>
         <br />
         <label for="debug_mode_select">RT debug mode:</label>
         <select id="debug_mode_select">
-          <option value="0">0 - Normal PBR</option>
-          <option value="1" selected>1 - Visible light count</option>
+          <option value="0" selected>0 - Normal PBR</option>
+          <option value="1">1 - Visible light count</option>
           <option value="2">2 - Raw albedo</option>
           <option value="3">3 - World normals</option>
         </select>
