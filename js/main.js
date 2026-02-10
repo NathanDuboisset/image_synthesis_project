@@ -62,16 +62,10 @@ function initEvents(GPUApp, scene) {
   });
 }
 
-function animate(scene, time) {
-  scene.time = time;
-  const t = time * 0.05;
-  const angle = t / 40.0;
-  scene.lightSources[scene.lightSources.length - 1].position = [0.5 * Math.cos(angle), 0.9, 0.5 * Math.sin(angle)];
-}
-
-function renderFrame(GPUApp, scene, time) {
+function renderScene(GPUApp, scene) {
   const useRayTracing = document.getElementById('raytracingCheckbox').checked;
-  if (document.getElementById('animateCheckbox').checked) animate(scene, time);
+  const start = performance.now();
+
   updateUniforms(GPUApp, scene);
   updateMaterialBuffer(GPUApp, scene.materials);
   updateLightSourceBuffer(GPUApp, scene.lightSources);
@@ -102,7 +96,14 @@ function renderFrame(GPUApp, scene, time) {
   }
   renderPass.end();
   GPUApp.device.queue.submit([encoder.finish()]);
-  requestAnimationFrame((t) => renderFrame(GPUApp, scene, t));
+
+  const end = performance.now();
+  const ms = (end - start).toFixed(3);
+  console.log('[Render] Frame generated in', ms, 'ms using', scene.lightSources.length, 'lights');
+  const label = document.getElementById('render_time_label');
+  if (label) {
+    label.textContent = `${ms} ms`;
+  }
 }
 
 async function main() {
@@ -120,8 +121,18 @@ async function main() {
     initEvents(GPUApp, scene);
     syncUI(scene);
     initGPUBuffers(GPUApp, scene);
-    console.log('[Main] GPU buffers initialized, starting render loop');
-    renderFrame(GPUApp, scene);
+    console.log('[Main] GPU buffers initialized');
+
+    // Initial image.
+    renderScene(GPUApp, scene);
+
+    // Manual "Generate image" button.
+    const renderButton = document.getElementById('render_button');
+    if (renderButton) {
+      renderButton.addEventListener('click', () => {
+        renderScene(GPUApp, scene);
+      });
+    }
   } catch (err) {
     console.error('[Main] Fatal error during initialization:', err);
   }
