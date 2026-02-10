@@ -1,15 +1,6 @@
 import { createScene } from './scene.js';
 import { createGPUApp, initRenderPipeline, initGPUBuffers, updateUniforms, updateMaterialBuffer, updateLightSourceBuffer } from './gpu.js';
 import { pan } from './camera.js';
-import { srgbToHex, hexToSrgb, linearVec3ToSrgb, srgbVec3ToLinear } from './color.js';
-
-function syncUI(scene) {
-  const roughnessSlider = document.getElementById('roughness_slider');
-  const roughnessLabel = document.getElementById('roughness_label');
-  const mat = scene.materials[scene.materials.length - 1];
-  roughnessSlider.value = mat.roughness;
-  roughnessLabel.textContent = mat.roughness.toFixed(2);
-}
 
 function initEvents(GPUApp, scene) {
   GPUApp.canvas.addEventListener('mousedown', (e) => {
@@ -41,25 +32,6 @@ function initEvents(GPUApp, scene) {
     scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, scene.camera.radius));
   }, { passive: false });
   GPUApp.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-
-  const material = scene.materials[scene.materials.length - 1];
-  const roughnessSlider = document.getElementById('roughness_slider');
-  roughnessSlider.value = material.roughness;
-  roughnessSlider.addEventListener('input', () => { material.roughness = parseFloat(roughnessSlider.value); });
-  const roughnessLabel = document.getElementById('roughness_label');
-  roughnessLabel.textContent = material.roughness.toFixed(2);
-
-  const metalnessSlider = document.getElementById('metalness_slider');
-  metalnessSlider.value = material.metalness;
-  metalnessSlider.addEventListener('input', () => { material.metalness = parseFloat(metalnessSlider.value); });
-  const metalnessLabel = document.getElementById('metalness_label');
-  metalnessLabel.textContent = material.metalness.toFixed(2);
-
-  const albedoPicker = document.getElementById('albedo_picker');
-  albedoPicker.value = srgbToHex(linearVec3ToSrgb(material.albedo));
-  albedoPicker.addEventListener('input', () => {
-    material.albedo = srgbVec3ToLinear(hexToSrgb(albedoPicker.value));
-  });
 }
 
 function renderScene(GPUApp, scene) {
@@ -99,7 +71,12 @@ function renderScene(GPUApp, scene) {
 
   const end = performance.now();
   const ms = (end - start).toFixed(3);
-  console.log('[Render] Frame generated in', ms, 'ms using', scene.lightSources.length, 'lights');
+
+  const debugRenderCheckbox = document.getElementById('debug_render_checkbox');
+  const debugRenderEnabled = debugRenderCheckbox && debugRenderCheckbox.checked;
+  if (debugRenderEnabled) {
+    console.log('[Render] Frame generated in', ms, 'ms using', scene.lightSources.length, 'lights');
+  }
   const label = document.getElementById('render_time_label');
   if (label) {
     label.textContent = `${ms} ms`;
@@ -119,7 +96,6 @@ async function main() {
     const scene = await createScene(camAspect);
     console.log('[Main] Scene ready, meshes:', scene.meshes.length, 'lights:', scene.lightSources.length);
     initEvents(GPUApp, scene);
-    syncUI(scene);
     initGPUBuffers(GPUApp, scene);
     console.log('[Main] GPU buffers initialized');
 

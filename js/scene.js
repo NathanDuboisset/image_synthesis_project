@@ -1,5 +1,4 @@
 import { createCamera } from './camera.js';
-import { createQuad, createRamFromData } from './mesh.js';
 import { loadOBJScene } from './objLoader.js';
 
 // Active scene:
@@ -8,59 +7,73 @@ import { loadOBJScene } from './objLoader.js';
 // - 'conference' : OBJ scene in data/scenes/conference
 const ACTIVE_SCENE = 'ram';
 
-// Very small CSV helper: returns all fields as strings.
-// Callers are responsible for converting numeric fields.
-function parseCSV(text) {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(',').map(h => h.trim());
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const values = lines[i].split(',').map(v => v.trim());
-    if (!values[0]) continue; // skip empty lines
-    const row = {};
-    headers.forEach((h, j) => {
-      row[h] = values[j] ?? '';
-    });
-    rows.push(row);
+async function loadMaterialsFromMTL(sceneName) {
+  const url = `data/scenes/${sceneName}/${sceneName}.mtl`;
+  console.log('[Scene] Loading materials from', url);
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    const lines = text.split(/\r?\n/);
+
+    const materialsWithNames = [];
+    let current = null;
+
+    for (let raw of lines) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const parts = line.split(/\s+/);
+      const kw = parts[0];
+      if (kw === 'newmtl') {
+        const name = parts[1] || '';
+        // Treat materials whose name ends with "Light" as emitter-only; skip them here.
+        current = {
+          name,
+          albedo: [0.8, 0.8, 0.8],
+          roughness: 0.5,
+          metalness: 0.0,
+        };
+        if (!/light$/i.test(name)) {
+          materialsWithNames.push(current);
+        }
+      } else if (kw === 'Kd' && current) {
+        const r = Number(parts[1]);
+        const g = Number(parts[2]);
+        const b = Number(parts[3]);
+        if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
+          current.albedo = [r, g, b];
+        }
+      }
+    }
+
+    if (!materialsWithNames.length) {
+      console.warn('[Scene] No non-light materials found in MTL, using default.');
+      materialsWithNames.push({
+        name: 'Default',
+        albedo: [0.8, 0.8, 0.8],
+        roughness: 0.5,
+        metalness: 0.0,
+      });
+    }
+
+    const materials = materialsWithNames.map(m => ({
+      albedo: m.albedo,
+      roughness: m.roughness,
+      metalness: m.metalness,
+    }));
+    console.log('[Scene] Parsed MTL materials:', materialsWithNames);
+    return materials;
+  } catch (err) {
+    console.error('[Scene] Failed to load MTL materials, using fallback.', err);
+    return [{
+      albedo: [0.8, 0.8, 0.8],
+      roughness: 0.5,
+      metalness: 0.0,
+    }];
   }
-  return rows;
 }
 
-async function loadMaterials() {
-  console.log('[Scene] Loading materials from data/materials.csv');
-  const res = await fetch('data/materials.csv');
-  const rows = parseCSV(await res.text());
-  console.log('[Scene] Materials CSV rows:', rows.length);
-  const materials = rows.map(r => ({
-    albedo: [Number(r.albedo_r), Number(r.albedo_g), Number(r.albedo_b)],
-    roughness: Number(r.roughness),
-    metalness: Number(r.metalness),
-  }));
-  console.log('[Scene] Parsed materials:', materials);
-  return materials;
-}
-
-async function loadLights(spot, angle) {
-  console.log('[Scene] Loading lights from data/lights.csv');
-  const res = await fetch('data/lights.csv');
-  const rows = parseCSV(await res.text());
-  console.log('[Scene] Lights CSV rows:', rows.length);
-  const lights = rows.map(r => ({
-    position: [Number(r.px), Number(r.py), Number(r.pz)],
-    intensity: Number(r.intensity),
-    color: [Number(r.cr), Number(r.cg), Number(r.cb)],
-    spot: spot,
-    angle: angle,
-    useRaytracedShadows: r.useRaytracedShadows === '1' || r.useRaytracedShadows === 'true',
-  }));
-  console.log('[Scene] Parsed lights:', lights);
-  return lights;
-}
-
-// Note: the RAM scene is now exported as an OBJ file under data/scenes/ram.
-// The CSV / JSON helpers above are kept for reference but are no longer used
-// by the main scene creation path.
+// Note: at runtime we now rely only on OBJ + MTL files.
 
 function computeMeshesBounds(meshes) {
   let minX = Infinity, minY = Infinity, minZ = Infinity;
@@ -129,45 +142,6 @@ function fitCameraToScene(scene) {
   scene.camera.far = Math.max(radius * 10.0, scene.camera.near * 10.0);
 }
 
-function addRamCeilingLights(scene) {
-  const bounds = computeMeshesBounds(scene.meshes);
-  if (!bounds) return;
-
-  const centerX = 0.5 * (bounds.minX + bounds.maxX);
-  const centerZ = 0.5 * (bounds.minZ + bounds.maxZ);
-  const sizeX = (bounds.maxX - bounds.minX) * 1.4;
-  const sizeZ = (bounds.maxZ - bounds.minZ) * 1.4;
-  const y = bounds.maxY + (bounds.maxY - bounds.minY) * 0.6;
-  const targetY = 0.5 * (bounds.minY + bounds.maxY);
-
-  const gridX = 10;
-  const gridZ = 10;
-  const spacingX = sizeX / gridX;
-  const spacingZ = sizeZ / gridZ;
-
-  const baseIntensity = 0.25;
-  const color = [1.0, 0.95, 0.9];
-  const angle = 0.5;
-
-  let added = 0;
-  for (let ix = 0; ix < gridX; ix++) {
-    for (let iz = 0; iz < gridZ; iz++) {
-      const cx = centerX - sizeX * 0.5 + (ix + 0.5) * spacingX;
-      const cz = centerZ - sizeZ * 0.5 + (iz + 0.5) * spacingZ;
-      scene.lightSources.push({
-        position: [cx, y, cz],
-        intensity: baseIntensity,
-        color: color,
-        spot: [centerX, targetY, centerZ],
-        angle: angle,
-        useRaytracedShadows: true,
-      });
-      added++;
-    }
-  }
-  console.log('[Scene] Added RAM ceiling lights:', added, 'total lights =', scene.lightSources.length);
-}
-
 function debugLightsAtPoint(label, scene, point) {
   const lights = scene.lightSources || [];
   if (!lights.length) {
@@ -208,6 +182,8 @@ function debugLightsAtPoint(label, scene, point) {
 }
 
 function debugLights(scene) {
+  const checkbox = typeof document !== 'undefined' ? document.getElementById('debug_lights_checkbox') : null;
+  if (!checkbox || !checkbox.checked) return;
   const bounds = computeMeshesBounds(scene.meshes);
   if (!bounds) return;
   const center = [
@@ -228,11 +204,9 @@ export async function createScene(camAspect) {
   console.log('[Scene] createScene start, aspect =', camAspect, 'activeScene =', ACTIVE_SCENE);
   const scene = {};
   scene.camera = createCamera(camAspect);
-  const tgt = [0.0, 0.5, 0.0];
-  const ang = 0.3;
 
-  const materials = await loadMaterials();
-  scene.materials = materials;
+  // Load materials directly from the scene's MTL file.
+  scene.materials = await loadMaterialsFromMTL(ACTIVE_SCENE);
 
   // Load OBJ scene placed under data/scenes/<ACTIVE_SCENE>.
   const materialIndex = Math.max(scene.materials.length - 1, 0);
@@ -241,30 +215,46 @@ export async function createScene(camAspect) {
   const objLights = objData.lights || [];
   scene.meshes = meshes;
 
-  scene.lightSources = await loadLights(tgt, ang);
-  if (ACTIVE_SCENE === 'ram' && objLights.length > 0) {
-    const bounds = computeMeshesBounds(scene.meshes);
-    if (bounds) {
-      const centerX = 0.5 * (bounds.minX + bounds.maxX);
-      const centerZ = 0.5 * (bounds.minZ + bounds.maxZ);
-      const targetY = 0.5 * (bounds.minY + bounds.maxY);
-      const color = [1.0, 0.95, 0.9];
-      const angle = 0.5;
-      const baseIntensity = 0.15;
-      let added = 0;
-      for (const p of objLights) {
-        scene.lightSources.push({
-          position: [p[0], p[1], p[2]],
-          intensity: baseIntensity,
-          color,
-          spot: [centerX, targetY, centerZ],
-          angle,
-          useRaytracedShadows: true,
-        });
-        added++;
-      }
-      console.log('[Scene] Added RAM OBJ lights from RamLight faces:', added, 'total lights =', scene.lightSources.length);
+  scene.lightSources = [];
+
+  const bounds = computeMeshesBounds(scene.meshes);
+  if (ACTIVE_SCENE === 'ram' && objLights.length > 0 && bounds) {
+    const centerX = 0.5 * (bounds.minX + bounds.maxX);
+    const centerZ = 0.5 * (bounds.minZ + bounds.maxZ);
+    const targetY = 0.5 * (bounds.minY + bounds.maxY);
+    const color = [1.0, 0.95, 0.9];
+    const angle = 0.5;
+    const baseIntensity = 0.15;
+    let added = 0;
+    for (const p of objLights) {
+      scene.lightSources.push({
+        position: [p[0], p[1], p[2]],
+        intensity: baseIntensity,
+        color,
+        spot: [centerX, targetY, centerZ],
+        angle,
+        useRaytracedShadows: true,
+      });
+      added++;
     }
+    console.log('[Scene] Added RAM OBJ lights from RamLight faces:', added, 'total lights =', scene.lightSources.length);
+  } else if (bounds) {
+    // Fallback single light above the scene center.
+    const center = [
+      0.5 * (bounds.minX + bounds.maxX),
+      0.5 * (bounds.minY + bounds.maxY),
+      0.5 * (bounds.minZ + bounds.maxZ),
+    ];
+    const y = bounds.maxY + (bounds.maxY - bounds.minY) * 0.6;
+    scene.lightSources.push({
+      position: [center[0], y, center[2]],
+      intensity: 1.0,
+      color: [1.0, 1.0, 1.0],
+      spot: center,
+      angle: 0.5,
+      useRaytracedShadows: true,
+    });
+    console.log('[Scene] Added fallback light above scene center, total lights =', scene.lightSources.length);
   }
   fitCameraToScene(scene);
   scene.time = 0;
