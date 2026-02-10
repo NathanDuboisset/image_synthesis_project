@@ -1,5 +1,5 @@
 import { createScene } from './scene.js';
-import { createGPUApp, initRenderPipeline, initGPUBuffers, updateUniforms, updateMaterialBuffer, updateLightSourceBuffer } from './gpu.js';
+import { createGPUApp, initRenderPipeline, initGPUBuffers, updateUniforms, updateMaterialBuffer, updateLightSourceBuffer, updateDebugUniform } from './gpu.js';
 import { pan } from './camera.js';
 
 function initEvents(GPUApp, scene) {
@@ -39,6 +39,7 @@ function renderScene(GPUApp, scene) {
   const start = performance.now();
 
   updateUniforms(GPUApp, scene);
+  updateDebugUniform(GPUApp);
   updateMaterialBuffer(GPUApp, scene.materials);
   updateLightSourceBuffer(GPUApp, scene.lightSources);
   const encoder = GPUApp.device.createCommandEncoder();
@@ -61,10 +62,38 @@ function renderScene(GPUApp, scene) {
   renderPass.setPipeline(useRayTracing ? GPUApp.rayTracingPipeline : GPUApp.rasterizationPipeline);
   renderPass.setBindGroup(0, GPUApp.bindGroup);
   if (!useRayTracing) {
-    for (let i = 0; i < scene.meshes.length; i++)
+    const debugCheckbox = document.getElementById('debug_lights_checkbox');
+    const debugOn = debugCheckbox && debugCheckbox.checked;
+    const baseMeshCount = typeof scene.baseMeshCount === 'number' ? scene.baseMeshCount : scene.meshes.length;
+
+    // Draw main scene meshes.
+    for (let i = 0; i < baseMeshCount; i++) {
       renderPass.draw(scene.meshes[i].indices.length, 1, 0, i);
+    }
+    // Optionally draw debug light marker meshes.
+    if (debugOn) {
+      for (let i = baseMeshCount; i < scene.meshes.length; i++) {
+        renderPass.draw(scene.meshes[i].indices.length, 1, 0, i);
+      }
+    }
   } else {
-    renderPass.draw(6);
+    // Ray tracing path: render the frame as a grid of tiles in a single pass.
+    const tileSize = 256;
+    const tilesX = Math.ceil(GPUApp.canvas.width / tileSize);
+    const tilesY = Math.ceil(GPUApp.canvas.height / tileSize);
+
+    for (let ty = 0; ty < tilesY; ty++) {
+      for (let tx = 0; tx < tilesX; tx++) {
+        const x = tx * tileSize;
+        const y = ty * tileSize;
+        const w = Math.min(tileSize, GPUApp.canvas.width - x);
+        const h = Math.min(tileSize, GPUApp.canvas.height - y);
+
+        renderPass.setViewport(x, y, w, h, 0.0, 1.0);
+        renderPass.setScissorRect(x, y, w, h);
+        renderPass.draw(6);
+      }
+    }
   }
   renderPass.end();
   GPUApp.device.queue.submit([encoder.finish()]);
@@ -99,7 +128,7 @@ async function main() {
     initGPUBuffers(GPUApp, scene);
     console.log('[Main] GPU buffers initialized');
 
-    // Initial image.
+    // Initial image (respect current ray tracing toggle).
     renderScene(GPUApp, scene);
 
     // Manual "Generate image" button.

@@ -100,6 +100,7 @@ export function initGPUBuffers(GPUApp, scene) {
   GPUApp.materialBuffer = createMaterialBuffer(GPUApp, scene.materials);
   GPUApp.lightSourceBuffer = createLightSourceBuffer(GPUApp, scene.lightSources);
   GPUApp.uniformBuffer = createGPUBuffer(GPUApp.device, GPUApp.uniformData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+  GPUApp.debugUniformBuffer = createGPUBuffer(GPUApp.device, GPUApp.debugUniformData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   GPUApp.bindGroup = GPUApp.device.createBindGroup({
     layout: GPUApp.bindGroupLayout,
     entries: [
@@ -110,6 +111,7 @@ export function initGPUBuffers(GPUApp, scene) {
       { binding: 4, resource: { buffer: GPUApp.meshBuffers.meshBuffer } },
       { binding: 5, resource: { buffer: GPUApp.materialBuffer } },
       { binding: 6, resource: { buffer: GPUApp.lightSourceBuffer } },
+      { binding: 7, resource: { buffer: GPUApp.debugUniformBuffer } },
     ],
   });
 }
@@ -126,6 +128,7 @@ export function initRenderPipeline(GPUApp, shaderCode) {
       { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
       { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
       { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
+      { binding: 7, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
     ],
   });
   GPUApp.rasterizationPipeline = GPUApp.device.createRenderPipeline({
@@ -186,6 +189,7 @@ export async function createGPUApp() {
     rayTracingPipeline: {},
     depthTexture: {},
     uniformData: new Float32Array(88),
+    debugUniformData: new Uint32Array(8),
   };
 }
 
@@ -199,7 +203,23 @@ export function updateUniforms(GPUApp, scene) {
   GPUApp.uniformData.set(scene.camera.projMat, 64);
   GPUApp.uniformData[80] = scene.camera.fov;
   GPUApp.uniformData[81] = scene.camera.aspect;
-  GPUApp.uniformData[84] = scene.meshes.length;
+  const meshCount = typeof scene.baseMeshCount === 'number' ? scene.baseMeshCount : scene.meshes.length;
+  GPUApp.uniformData[84] = meshCount;
   GPUApp.uniformData[85] = scene.lightSources.length;
+  GPUApp.uniformData[86] = GPUApp.canvas.width;
+  GPUApp.uniformData[87] = GPUApp.canvas.height;
   GPUApp.device.queue.writeBuffer(GPUApp.uniformBuffer, 0, GPUApp.uniformData.buffer, GPUApp.uniformData.byteOffset, GPUApp.uniformData.byteLength);
+}
+
+export function updateDebugUniform(GPUApp) {
+  const select = document.getElementById('debug_mode_select');
+  let mode = 0;
+  if (select) {
+    const parsed = Number(select.value);
+    if (!Number.isNaN(parsed)) {
+      mode = parsed | 0;
+    }
+  }
+  GPUApp.debugUniformData[0] = mode;
+  GPUApp.device.queue.writeBuffer(GPUApp.debugUniformBuffer, 0, GPUApp.debugUniformData);
 }

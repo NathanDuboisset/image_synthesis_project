@@ -1,5 +1,6 @@
 import { createCamera } from './camera.js';
 import { loadOBJScene } from './objLoader.js';
+import { createSphere } from './mesh.js';
 
 // Active scene:
 // - 'ram'        : OBJ scene in data/scenes/ram (exported from ram-mesh.json + meshes.csv)
@@ -200,6 +201,64 @@ function debugLights(scene) {
   debugLightsAtPoint('ground', scene, ground);
 }
 
+function addDebugLightMeshes(scene) {
+  const lights = scene.lightSources || [];
+  if (!lights.length || typeof document === 'undefined') return;
+
+  // Remember how many "real" meshes we have so we can keep ray tracing
+  // operating only on the main geometry.
+  if (typeof scene.baseMeshCount !== 'number') {
+    scene.baseMeshCount = scene.meshes.length;
+  }
+
+  // Add a bright material for light markers.
+  const debugMaterialIndex = scene.materials.length;
+  scene.materials.push({
+    albedo: [1.0, 0.9, 0.2],
+    roughness: 0.2,
+    metalness: 0.0,
+  });
+
+  // Small sphere used as a template, then translated to each light position.
+  const radius = 0.02;
+  const sphere = createSphere(radius, 8, 8);
+  const basePositions = sphere.positions;
+  const baseNormals = sphere.normals;
+  const baseIndices = sphere.indices;
+
+  scene.debugLightMeshStart = scene.meshes.length;
+
+  for (const l of lights) {
+    const [cx, cy, cz] = l.position;
+    const vertCount = basePositions.length / 3;
+
+    const positions = new Float32Array(basePositions.length);
+    for (let i = 0; i < vertCount; i++) {
+      const px = basePositions[3 * i];
+      const py = basePositions[3 * i + 1];
+      const pz = basePositions[3 * i + 2];
+      positions[3 * i] = px + cx;
+      positions[3 * i + 1] = py + cy;
+      positions[3 * i + 2] = pz + cz;
+    }
+
+    const normals = new Float32Array(baseNormals.length);
+    normals.set(baseNormals);
+
+    const indices = new Uint32Array(baseIndices.length);
+    indices.set(baseIndices);
+
+    scene.meshes.push({
+      positions,
+      normals,
+      indices,
+      materialIndex: debugMaterialIndex,
+    });
+  }
+
+  console.log('[Scene] Added debug light meshes:', scene.meshes.length - scene.baseMeshCount);
+}
+
 export async function createScene(camAspect) {
   console.log('[Scene] createScene start, aspect =', camAspect, 'activeScene =', ACTIVE_SCENE);
   const scene = {};
@@ -214,6 +273,7 @@ export async function createScene(camAspect) {
   const meshes = objData.meshes || [];
   const objLights = objData.lights || [];
   scene.meshes = meshes;
+  scene.baseMeshCount = meshes.length;
 
   scene.lightSources = [];
 
@@ -257,6 +317,10 @@ export async function createScene(camAspect) {
     console.log('[Scene] Added fallback light above scene center, total lights =', scene.lightSources.length);
   }
   fitCameraToScene(scene);
+
+  // Build small debug meshes at each light position so they can be
+  // toggled on in raster mode.
+  addDebugLightMeshes(scene);
   scene.time = 0;
   debugLights(scene);
   console.log('[Scene] Scene created:', {

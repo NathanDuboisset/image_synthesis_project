@@ -21,6 +21,14 @@
         <label for="debug_render_checkbox">Debug render</label>
         <input type="checkbox" id="debug_lights_checkbox">
         <label for="debug_lights_checkbox">Debug lights</label>
+        <br />
+        <label for="debug_mode_select">RT debug mode:</label>
+        <select id="debug_mode_select">
+          <option value="0">0 - Normal PBR</option>
+          <option value="1" selected>1 - Visible light count</option>
+          <option value="2">2 - Raw albedo</option>
+          <option value="3">3 - World normals</option>
+        </select>
       </p>
     </div>
     <div class="description-container"></div>

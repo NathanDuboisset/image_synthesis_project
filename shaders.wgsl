@@ -40,7 +40,13 @@ struct Scene {
   camera: Camera,
   numOfMeshes: f32,
   numOfLightSources: f32,
-  _pad: vec2<f32> // Required for uniform buffer alignment
+  screenWidth: f32,
+  screenHeight: f32,
+};
+
+struct DebugParams {
+  mode: u32,
+  _pad: vec3<u32>,
 };
 
 @group(0) @binding(0)
@@ -63,6 +69,9 @@ var<storage, read> materials : array<Material>; // matei
 
 @group(0) @binding(6)
 var<storage, read> lightSources : array<LightSource>;
+
+@group(0) @binding(7)
+var<uniform> debugParams : DebugParams;
 
 struct RasterVertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -334,37 +343,99 @@ fn rayTrace(
   return intersectionFound;
 }
 
+// MODES:
+// 0 = Normal PBR
+// 1 = Visible Light Count (Heatmap)
+// 2 = Raw Albedo (Texture Color)
+// 3 = World Normals
 fn shadeRT(hit: Hit) -> vec4f {
-  let cam = scene.camera;
+  // Debug mode is driven by a small uniform set from the UI.
+  let debugMode = debugParams.mode;
+
   let mesh = meshes[hit.meshIndex];
   let tri = getTriangle(mesh.triOffset + hit.triIndex);
   let uvw = vec3f(hit.u, hit.v, 1.0 - hit.u - hit.v);
-  let position = interpolate(getVertPos(mesh.posOffset + tri.x), getVertPos(mesh.posOffset + tri.y), getVertPos(mesh.posOffset + tri.z), uvw);
-  var normal = normalize(interpolate(getVertNormal(mesh.posOffset + tri.x), getVertNormal(mesh.posOffset + tri.y), getVertNormal(mesh.posOffset + tri.z), uvw));
-  normal = (cam.transInvViewMat * vec4f(normal, 1.0)).xyz;
-  var colorResponse = vec3f(0.0);
-  let viewPosition = (cam.viewMat * cam.modelMat * vec4f(position, 1.0)).xyz;
-  let wo = normalize(-viewPosition);
-  let numOfLights = u32(scene.numOfLightSources);
-  for (var lightSourceIndex = 0u; lightSourceIndex < numOfLights; lightSourceIndex++) {
-    let l = lightSources[lightSourceIndex];
-    if (bool(l.rayTracedShadows) == true) {
-      var shadowRay : Ray;
-      const shadowBias = 0.0001;
-      let pos2light = l.position - position;
-      let lightDist = length(pos2light);
-      shadowRay.direction = normalize(pos2light);
-      shadowRay.origin = position + shadowBias * normal;
-      var shadowHit : Hit;
-      let inShadow = rayTrace(shadowRay, lightDist + EPSILON, true, &shadowHit); // Any hit is valid for shadow rays
-      if (inShadow == false || (inShadow == true && shadowHit.t > lightDist)) {
-        colorResponse += lightShade(viewPosition, normal, mesh.materialIndex, lightSourceIndex, wo);
-      }
-    } else {
-      colorResponse += lightShade(viewPosition, normal, mesh.materialIndex, lightSourceIndex, wo);
+
+  // Reconstruct World Data
+  let p0 = getVertPos(mesh.posOffset + tri.x);
+  let p1 = getVertPos(mesh.posOffset + tri.y);
+  let p2 = getVertPos(mesh.posOffset + tri.z);
+  let worldPos = uvw.z * p0 + uvw.x * p1 + uvw.y * p2;
+  
+  let n0 = getVertNormal(mesh.posOffset + tri.x);
+  let n1 = getVertNormal(mesh.posOffset + tri.y);
+  let n2 = getVertNormal(mesh.posOffset + tri.z);
+  let worldNormal = normalize(uvw.z * n0 + uvw.x * n1 + uvw.y * n2);
+
+  // DEBUG 3: Show Normals
+  if (debugMode == 3u) {
+      return vec4f(worldNormal * 0.5 + 0.5, 1.0);
+  }
+
+  // DEBUG 2: Show Albedo
+  let m = materials[mesh.materialIndex];
+  if (debugMode == 2u) {
+      return vec4f(m.albedo, 1.0);
+  }
+
+  let cam = scene.camera;
+  let viewPos = (cam.viewMat * cam.modelMat * vec4f(worldPos, 1.0)).xyz;
+  let viewNormal = normalize((cam.transInvViewMat * vec4f(worldNormal, 1.0)).xyz);
+  let wo = normalize(-viewPos);
+
+  var outputColor = vec3f(0.0);
+  var visibleCount = 0.0;
+  
+  // CRASH FIX: Limit loop to 50 lights max for safety until Lightcuts is ready
+  let nLights = min(u32(scene.numOfLightSources), 50u); 
+
+  for (var i = 0u; i < nLights; i++) {
+    let l = lightSources[i];
+    let L = l.position - worldPos;
+    let dist = length(L);
+    let dir = normalize(L);
+    
+    var visible = 1.0;
+    if (bool(l.rayTracedShadows)) {
+       var shadowRay: Ray;
+       // Bias along the light direction instead of the surface normal.
+       // This avoids bogus self-shadowing when normals are flipped or noisy,
+       // which was making the floor and RAM top report zero visible lights.
+       shadowRay.origin = worldPos + dir * 0.01;
+       shadowRay.direction = dir;
+       
+       var shadowHit: Hit;
+       if (rayTrace(shadowRay, dist - 0.01, true, &shadowHit)) {
+         visible = 0.0;
+       }
+    }
+
+    if (visible > 0.0) {
+       // Accumulate for heatmap
+       visibleCount += 1.0;
+
+       // Normal shading math
+       if (debugMode == 0u) {
+           let att = 10.0 / (dist * dist + 0.1); 
+           let radiance = l.color * l.intensity * att;
+           let wi = normalize((cam.viewMat * vec4f(l.position, 1.0)).xyz - viewPos);
+           let fr = BRDF(wi, wo, viewNormal, m.albedo, m.roughness, m.metalness);
+           outputColor += radiance * fr * max(0.0, dot(wi, viewNormal));
+       }
     }
   }
-  return vec4f (colorResponse, 1.0);
+
+ // DEBUG 1: Heatmap (White = 50 lights visible, Black = 0)
+ if (debugMode == 1u) {
+  // Keep some base visibility so geometry is never pure black.
+  let base = 0.2;
+  let heat = clamp(visibleCount / 100.0, 0.0, 1.0);
+  let v = base + (1.0 - base) * heat;
+  return vec4f(vec3f(v), 1.0);
+}
+
+  // DEBUG 0: Normal PBR
+  return vec4f(outputColor, 1.0);
 }
 
 @vertex
@@ -385,7 +456,11 @@ fn shadeRT(hit: Hit) -> vec4f {
 @fragment
   fn rayFragmentMain(input: RayFragmentInput) -> @location(0) vec4f {
     const MAX_DISTANCE = 1e8;
-    let coord = vec2f(input.fragPos.x/1024, 1.0-input.fragPos.y/768);
+    // Use actual canvas resolution from the uniform instead of hardcoded values.
+    let coord = vec2f(
+      input.fragPos.x / scene.screenWidth,
+      1.0 - input.fragPos.y / scene.screenHeight
+    );
     let ray = rayAt(coord, scene.camera);
     var colorResponse = vec4f(0.0, 0.0, 0.0, 1.0);
     var hit: Hit;
