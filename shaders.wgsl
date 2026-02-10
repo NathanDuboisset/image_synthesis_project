@@ -94,6 +94,7 @@ fn sqr(x: f32) -> f32 {
 
 fn attenuation(dist: f32, coneDecay: f32) -> f32 {
   return coneDecay * (1.0 / sqr(dist));
+  //return coneDecay / (1.0 + 0.02 * sqr(dist));
 }
 
 fn TrowbridgeReitzNDF(wh : vec3f, n : vec3f, roughness: f32) -> f32 {
