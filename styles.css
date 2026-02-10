@@ -1,0 +1,29 @@
+input[type="range"] {
+  width: 200px;
+}
+
+body {
+  margin-left: 20%;
+  margin-right: 20%;
+  padding: 0;
+}
+
+.canvas-container {
+  text-align: center;
+}
+
+.description-container {
+  text-align: left;
+}
+
+.controls-table {
+  margin: auto;
+}
+
+.label-cell {
+  text-align: right;
+}
+
+#albedo_picker {
+  width: 200px;
+}

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CSC-52084-EP - Assignment 4 - Lighting and Reflectance in WebGPU - Solution</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="canvas-container">
+      <canvas width="1024" height="768"></canvas>
+      <p>
+        <input type="checkbox" id="raytracingCheckbox">
+        <label for="raytracingCheckbox">Ray tracing</label>
+        <input type="checkbox" id="raytracedShadowsCheckbox">
+        <label for="raytracedShadowsCheckbox">Ray-traced shadows</label>
+        <input type="checkbox" id="animateCheckbox" checked>
+        <label for="animateCheckbox">Animate</label>
+        <br />
+        <table class="controls-table">
+          <tr>
+            <td class="label-cell"><label for="albedo_picker">Albedo:</label></td>
+            <td><input type="color" id="albedo_picker"></td>
+          </tr>
+          <tr>
+            <td class="label-cell"><label for="roughness_slider">Roughness:</label></td>
+            <td><input type="range" min="0" max="1" step="0.01" id="roughness_slider"></td>
+            <td><span id="roughness_label">0.5</span></td>
+          </tr>
+          <tr>
+            <td class="label-cell"><label for="metalness_slider">Metalness:</label></td>
+            <td><input type="range" min="0" max="1" step="0.01" id="metalness_slider"></td>
+            <td><span id="metalness_label">0.0</span></td>
+          </tr>
+        </table>
+      </p>
+    </div>
+    <div class="description-container">
+      <p>
+        This solution to Assignment 4 provides a reflectance model parameterized by its albedo, roughness and metalness values.
+        It implements a Cook-Torrance microfacet BRDF model using a Trowbridge-Reitz normal distribution function, a Schlick approximaton to the Fresnel term and a Smith shadowing-masking geometric term.
+        A couple of additional quality-of-life features are provided.
+      </p>
+      <p>
+        A few observations:
+        <ul>
+          <li>The solution contains more than what the assignement asked for.</li>
+          <li>In particular, the general GPU pipelines have been evolved to provide full random accessible mesh buffers. As such, storage buffers are used instead of vertex attributes/triangle indices buffers. See how the rasterization shader pipeline input layout is simplified compared to the last assignement.</li>
+          <li>What matters is the GPU shader code, in particular the shading logic; the JavaScript code is mostly about setting things up.</li>
+          <li>Observe how the storage buffers now provide a complete description of the scene (lights, materials, mesh data).</li>
+          <li>The camera parameters are passed as uniforms, as they are small and change frequently.</li>
+          <li>The shading logic remains shared among both the rasterization and ray tracing pipelines.</li>
+          <li>The input "perceptual" roughness is squared in the D ang G term to provide a more linear visual behavior from 0 to 1.</li>
+          <li>The NDF becomes singular for null roughness. This can be easily fixed and is let as is so that you can see this limit case.</li>
+          <li>For now, the input geometry is loaded from data files (CSV for scene blocks, JSON for mesh data); serve the project via a local server to avoid CORS.</li>
+          <li>The whole illumination is computed in view space i.e, w.r.t. the local frame of the camera, but object space illumination is possible too; you just need to be consistent.</li>
+          <li>The UI code is basic and suboptimal -  this is not the point of the assignment.</li>
+          <li>Depending on your GPU, you should now feel that brute ray tracing does not scale. This will be addressed in a future assignment.</li>
+          <li>Never the less, an effort is made to exit early (anyHit parameter in the raytracing algorithm) for shadow rays: any intersection is valid to discard a light source from contributing at a shading location, there is no need to seek for the closest.</li>
+        </ul>
+        You can refer to the <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API">WebGPU documentation</a> for more information about the actual WebGPU/WGSL code.
+        In general, take the time to look at the code function by function, at least for the WGLS shaders (again, this what matters here).
+      </p>
+    </div>
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>
