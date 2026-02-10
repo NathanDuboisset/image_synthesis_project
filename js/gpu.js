@@ -71,11 +71,13 @@ export function updateMaterialBuffer(GPUApp, materials) {
 export function fillLightSourceStagingBuffer(GPUApp, lightSources) {
   const sizeOfLightSource = 12;
   const useRaytracedShadows = document.getElementById('raytracingCheckbox').checked;
+  const intensityEl = typeof document !== 'undefined' ? document.getElementById('intensity_slider') : null;
+  const intensityScale = intensityEl ? Math.max(0, parseFloat(intensityEl.value) || 1) : 1;
   for (let i = 0; i < lightSources.length; i++) {
     const l = lightSources[i];
     const offset = i * sizeOfLightSource;
     GPUApp.lightSourceStagingBuffer.set(l.position, offset);
-    GPUApp.lightSourceStagingBuffer[offset + 3] = l.intensity;
+    GPUApp.lightSourceStagingBuffer[offset + 3] = l.intensity * intensityScale;
     GPUApp.lightSourceStagingBuffer.set(l.color, offset + 4);
     GPUApp.lightSourceStagingBuffer[offset + 7] = l.angle;
     GPUApp.lightSourceStagingBuffer.set(l.spot, offset + 8);

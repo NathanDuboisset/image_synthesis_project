@@ -7,28 +7,88 @@
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <div class="canvas-container">
-      <canvas width="1024" height="768"></canvas>
-      <p>
-        <input type="checkbox" id="raytracingCheckbox">
-        <label for="raytracingCheckbox">Ray tracing + shadows</label>
-        <button id="render_button">Generate image</button>
-        <span id="render_time_label"></span>
-        <br />
-        <input type="checkbox" id="debug_render_checkbox" checked>
-        <label for="debug_render_checkbox">Debug render</label>
-        <input type="checkbox" id="debug_lights_checkbox" checked>
-        <label for="debug_lights_checkbox">Debug lights</label>
-        <br />
-        <label for="debug_mode_select">RT debug mode:</label>
-        <select id="debug_mode_select">
-          <option value="0" selected>0 - Normal PBR</option>
-          <option value="1">1 - Visible light count</option>
-          <option value="2">2 - Raw albedo</option>
-          <option value="3">3 - World normals</option>
+    <header class="app-header">
+      <div class="header-row">
+        <label for="scene_select">Scene:</label>
+        <select id="scene_select">
+          <option value="ram" selected>ram</option>
+          <option value="sponza">sponza</option>
+          <option value="conference">conference</option>
         </select>
-      </p>
-    </div>
+        <nav class="tabs" role="tablist">
+          <button type="button" class="tab active" data-tab="playground" role="tab" aria-selected="true">Playground</button>
+          <button type="button" class="tab" data-tab="full-lights" role="tab" aria-selected="false">Full-lights training</button>
+          <button type="button" class="tab" data-tab="stochastic" role="tab" aria-selected="false">Stochastic</button>
+        </nav>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <aside class="sidebar" id="playground_sidebar">
+        <div class="sidebar-section">
+          <input type="checkbox" id="raytracingCheckbox">
+          <label for="raytracingCheckbox">Ray tracing + shadows</label>
+        </div>
+        <div class="sidebar-section">
+          <button type="button" id="render_button">Generate image</button>
+          <span id="render_time_label"></span>
+        </div>
+        <div class="sidebar-section">
+          <input type="checkbox" id="debug_render_checkbox" checked>
+          <label for="debug_render_checkbox">Debug render</label>
+        </div>
+        <div class="sidebar-section">
+          <input type="checkbox" id="debug_lights_checkbox" checked>
+          <label for="debug_lights_checkbox">Debug lights</label>
+        </div>
+        <div class="sidebar-section">
+          <label for="intensity_slider">Intensity:</label>
+          <input type="range" id="intensity_slider" min="0" max="3" step="0.1" value="1">
+          <span id="intensity_value">1</span>
+        </div>
+        <div class="sidebar-section">
+          <label for="debug_mode_select">RT debug mode:</label>
+          <select id="debug_mode_select">
+            <option value="0" selected>0 - Normal PBR</option>
+            <option value="1">1 - Visible light count</option>
+            <option value="2">2 - Raw albedo</option>
+            <option value="3">3 - World normals</option>
+          </select>
+        </div>
+      </aside>
+
+      <section class="tab-panel active" id="panel-playground" role="tabpanel">
+        <div class="canvas-container">
+          <canvas width="1024" height="768"></canvas>
+        </div>
+      </section>
+
+      <section class="tab-panel training-panel" id="panel-full-lights" role="tabpanel" hidden>
+        <div class="training-content">
+          <p>Render 10 images with full lights, one by one, from random top-down camera angles. Average time is computed.</p>
+          <button type="button" id="full_lights_run_btn">Run 10 images</button>
+          <div class="training-stats" id="full_lights_stats">
+            <p>Average render time: <span id="full_lights_avg_ms">—</span> ms</p>
+            <p>Last run: <span id="full_lights_last_run">—</span></p>
+          </div>
+          <div class="canvas-container training-canvas-wrap">
+            <canvas id="training_canvas" width="1024" height="768"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel training-panel" id="panel-stochastic" role="tabpanel" hidden>
+        <div class="training-content">
+          <p>Stochastic method benchmarks (to be implemented). Same structure as Full-lights: run N images, report average time.</p>
+          <button type="button" id="stochastic_run_btn" disabled>Run 10 images (coming next)</button>
+          <div class="training-stats" id="stochastic_stats">
+            <p>Average render time: <span id="stochastic_avg_ms">—</span> ms</p>
+            <p>Last run: <span id="stochastic_last_run">—</span></p>
+          </div>
+        </div>
+      </section>
+    </main>
+
     <div class="description-container"></div>
     <script type="module" src="js/main.js"></script>
   </body>

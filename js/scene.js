@@ -2,11 +2,7 @@ import { createCamera } from './camera.js';
 import { loadOBJScene } from './objLoader.js';
 import { createSphere } from './mesh.js';
 
-// Active scene:
-// - 'ram'        : OBJ scene in data/scenes/ram (exported from ram-mesh.json + meshes.csv)
-// - 'sponza'     : OBJ scene in data/scenes/sponza
-// - 'conference' : OBJ scene in data/scenes/conference
-const ACTIVE_SCENE = 'ram';
+// Scene names: 'ram' | 'sponza' | 'conference' (must match data/scenes/<name>)
 
 async function loadMaterialsFromMTL(sceneName) {
   const url = `data/scenes/${sceneName}/${sceneName}.mtl`;
@@ -156,16 +152,16 @@ function debugLightsAtPoint(label, scene, point) {
     const dx = point[0] - l.position[0];
     const dy = point[1] - l.position[1];
     const dz = point[2] - l.position[2];
-    const distSq = dx*dx + dy*dy + dz*dz;
+    const distSq = dx * dx + dy * dy + dz * dz;
     const dist = Math.sqrt(distSq);
     if (dist <= 0.0) continue;
     const wi = [-dx / dist, -dy / dist, -dz / dist];
     const lx = l.spot[0] - l.position[0];
     const ly = l.spot[1] - l.position[1];
     const lz = l.spot[2] - l.position[2];
-    const lenL = Math.sqrt(lx*lx + ly*ly + lz*lz) || 1.0;
+    const lenL = Math.sqrt(lx * lx + ly * ly + lz * lz) || 1.0;
     const lightDir = [lx / lenL, ly / lenL, lz / lenL];
-    const dotVal = -(wi[0]*lightDir[0] + wi[1]*lightDir[1] + wi[2]*lightDir[2]);
+    const dotVal = -(wi[0] * lightDir[0] + wi[1] * lightDir[1] + wi[2] * lightDir[2]);
     const spotConeDecay = dotVal - l.angle;
     if (spotConeDecay <= 0.0) continue;
     inCone++;
@@ -259,17 +255,46 @@ function addDebugLightMeshes(scene) {
   console.log('[Scene] Added debug light meshes:', scene.meshes.length - scene.baseMeshCount);
 }
 
-export async function createScene(camAspect) {
-  console.log('[Scene] createScene start, aspect =', camAspect, 'activeScene =', ACTIVE_SCENE);
+/**
+ * Set camera to a top-down view (from above) with optional yaw (azimuth) in radians.
+ * Call after createScene / fitCameraToScene so radius and target are set.
+ */
+export function setCameraTopDown(scene, yawRad = 0) {
+  const bounds = computeMeshesBounds(scene.meshes);
+  if (!bounds) return;
+  const center = [
+    0.5 * (bounds.minX + bounds.maxX),
+    0.5 * (bounds.minY + bounds.maxY),
+    0.5 * (bounds.minZ + bounds.maxZ),
+  ];
+  let radiusSq = 0;
+  for (const mesh of scene.meshes) {
+    if (!mesh.positions || mesh.positions.length < 3) continue;
+    const p = mesh.positions;
+    for (let i = 0; i < p.length; i += 3) {
+      const dx = p[i] - center[0], dy = p[i + 1] - center[1], dz = p[i + 2] - center[2];
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > radiusSq) radiusSq = d2;
+    }
+  }
+  const radius = Math.max(Math.sqrt(radiusSq), 0.1);
+  scene.camera.target = center;
+  scene.camera.radius = Math.min(Math.max(radius * 2.5, scene.camera.minRadius * 2), scene.camera.maxRadius);
+  scene.camera.pitch = Math.PI / 2;
+  scene.camera.yaw = yawRad;
+}
+
+export async function createScene(camAspect, sceneName = 'ram') {
+  console.log('[Scene] createScene start, aspect =', camAspect, 'sceneName =', sceneName);
   const scene = {};
   scene.camera = createCamera(camAspect);
 
   // Load materials directly from the scene's MTL file.
-  scene.materials = await loadMaterialsFromMTL(ACTIVE_SCENE);
+  scene.materials = await loadMaterialsFromMTL(sceneName);
 
-  // Load OBJ scene placed under data/scenes/<ACTIVE_SCENE>.
+  // Load OBJ scene placed under data/scenes/<sceneName>.
   const materialIndex = Math.max(scene.materials.length - 1, 0);
-  const objData = await loadOBJScene(ACTIVE_SCENE, materialIndex);
+  const objData = await loadOBJScene(sceneName, materialIndex);
   const meshes = objData.meshes || [];
   const objLights = objData.lights || [];
   scene.meshes = meshes;
@@ -278,13 +303,13 @@ export async function createScene(camAspect) {
   scene.lightSources = [];
 
   const bounds = computeMeshesBounds(scene.meshes);
-  if (ACTIVE_SCENE === 'ram' && objLights.length > 0 && bounds) {
+  if (sceneName === 'ram' && objLights.length > 0 && bounds) {
     const centerX = 0.5 * (bounds.minX + bounds.maxX);
     const centerZ = 0.5 * (bounds.minZ + bounds.maxZ);
     const targetY = 0.5 * (bounds.minY + bounds.maxY);
     const color = [1.0, 0.95, 0.9];
     const angle = 0.5;
-    const baseIntensity = 0.10;
+    const baseIntensity = 0.05;
     let added = 0;
     for (const p of objLights) {
       scene.lightSources.push({

@@ -387,7 +387,7 @@ fn shadeRT(hit: Hit) -> vec4f {
   var visibleCount = 0.0;
   
   // CRASH FIX: Limit loop to 50 lights max for safety until Lightcuts is ready
-  let nLights = min(u32(scene.numOfLightSources), 50u); 
+  let nLights = min(u32(scene.numOfLightSources), 100u); 
 
   for (var i = 0u; i < nLights; i++) {
     let l = lightSources[i];
@@ -401,7 +401,7 @@ fn shadeRT(hit: Hit) -> vec4f {
        // Bias along the light direction instead of the surface normal.
        // This avoids bogus self-shadowing when normals are flipped or noisy,
        // which was making the floor and RAM top report zero visible lights.
-       shadowRay.origin = worldPos + dir * 0.01;
+       shadowRay.origin = worldPos;
        shadowRay.direction = dir;
        
        var shadowHit: Hit;

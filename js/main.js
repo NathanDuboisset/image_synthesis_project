@@ -1,4 +1,4 @@
-import { createScene } from './scene.js';
+import { createScene, setCameraTopDown } from './scene.js';
 import { createGPUApp, initRenderPipeline, initGPUBuffers, updateUniforms, updateMaterialBuffer, updateLightSourceBuffer, updateDebugUniform } from './gpu.js';
 import { pan } from './camera.js';
 
@@ -188,13 +188,14 @@ async function renderScene(GPUApp, scene) {
   const end = performance.now();
   const frameMs = end - start;
   const ms = frameMs.toFixed(3);
-  if (debugRenderEnabled) {
+  if (debugRenderEnabled && useRayTracing) {
     console.log('[Render] Frame generated in', ms, 'ms using', scene.lightSources.length, 'lights');
   }
   const label = document.getElementById('render_time_label');
   if (label) {
     label.textContent = `${ms} ms`;
   }
+  return frameMs;
 }
 
 async function main() {
@@ -207,7 +208,10 @@ async function main() {
     console.log('[Main] shaders.wgsl HTTP status =', shaderResponse.status);
     const shaderCode = await shaderResponse.text();
     initRenderPipeline(GPUApp, shaderCode);
-    const scene = await createScene(camAspect);
+
+    const sceneSelect = document.getElementById('scene_select');
+    const getSceneName = () => (sceneSelect && sceneSelect.value) || 'ram';
+    let scene = await createScene(camAspect, getSceneName());
     console.log('[Main] Scene ready, meshes:', scene.meshes.length, 'lights:', scene.lightSources.length);
     let animationFrameId = null;
     let isRendering = false;
@@ -246,11 +250,33 @@ async function main() {
     // Initial render
     await renderScene(GPUApp, scene);
 
+    // Intensity slider: different range per mode. Raster = 0–3 (default 1); RT = 0–0.5 (default 0.3).
+    const intensitySlider = document.getElementById('intensity_slider');
+    const intensityValue = document.getElementById('intensity_value');
+    function syncIntensitySliderToMode() {
+      if (!intensitySlider || !intensityValue) return;
+      const useRT = document.getElementById('raytracingCheckbox').checked;
+      if (useRT) {
+        intensitySlider.min = '0';
+        intensitySlider.max = '0.5';
+        intensitySlider.step = '0.01';
+        intensitySlider.value = '0.3';
+      } else {
+        intensitySlider.min = '0';
+        intensitySlider.max = '3';
+        intensitySlider.step = '0.1';
+        intensitySlider.value = '1';
+      }
+      intensityValue.textContent = intensitySlider.value;
+    }
+
     // Start continuous rendering loop for non-raytracing mode
     const raytracingCheckbox = document.getElementById('raytracingCheckbox');
     if (raytracingCheckbox) {
+      syncIntensitySliderToMode();
       raytracingCheckbox.addEventListener('change', () => {
         const useRayTracing = raytracingCheckbox.checked;
+        syncIntensitySliderToMode();
         if (!useRayTracing && !animationFrameId) {
           // Start continuous rendering when ray tracing is turned off
           renderLoop();
@@ -276,6 +302,94 @@ async function main() {
           await renderScene(GPUApp, scene);
           isRendering = false;
         }
+      });
+    }
+
+    // Intensity slider: update label and trigger render.
+    if (intensitySlider && intensityValue) {
+      intensitySlider.addEventListener('input', () => {
+        intensityValue.textContent = intensitySlider.value;
+        const useRT = document.getElementById('raytracingCheckbox').checked;
+        if (!useRT && !isRendering && !animationFrameId) renderLoop();
+      });
+      intensitySlider.addEventListener('change', () => {
+        intensityValue.textContent = intensitySlider.value;
+        const useRT = document.getElementById('raytracingCheckbox').checked;
+        if (useRT && !isRendering) {
+          isRendering = true;
+          renderScene(GPUApp, scene).then(() => { isRendering = false; });
+        }
+      });
+    }
+
+    // Scene dropdown: reload scene and buffers when changed
+    if (sceneSelect) {
+      sceneSelect.addEventListener('change', async () => {
+        if (animationFrameId) {
+          cancelAnimationFrame(animationFrameId);
+          animationFrameId = null;
+        }
+        const sceneName = getSceneName();
+        try {
+          scene = await createScene(camAspect, sceneName);
+          initGPUBuffers(GPUApp, scene);
+          syncIntensitySliderToMode();
+          await renderScene(GPUApp, scene);
+          if (raytracingCheckbox && !raytracingCheckbox.checked) renderLoop();
+        } catch (e) {
+          console.error('[Main] Scene load failed:', e);
+        }
+      });
+    }
+
+    // Tabs: switch panel and sidebar visibility
+    document.querySelectorAll('.tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const id = tab.getAttribute('data-tab');
+        document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+        tab.classList.add('active');
+        document.querySelectorAll('.tab-panel').forEach((panel) => {
+          const panelId = panel.id.replace('panel-', '');
+          const isActive = panelId === id;
+          panel.classList.toggle('active', isActive);
+          panel.hidden = !isActive;
+        });
+        const sidebarEl = document.getElementById('playground_sidebar');
+        if (sidebarEl) sidebarEl.style.display = id === 'playground' ? 'flex' : 'none';
+      });
+    });
+    const sidebarEl = document.getElementById('playground_sidebar');
+    if (sidebarEl) sidebarEl.style.display = 'flex';
+
+    // Full-lights training: run 10 images with random top-down cameras, report average time
+    const fullLightsRunBtn = document.getElementById('full_lights_run_btn');
+    const fullLightsAvgMs = document.getElementById('full_lights_avg_ms');
+    const fullLightsLastRun = document.getElementById('full_lights_last_run');
+    if (fullLightsRunBtn && fullLightsAvgMs && fullLightsLastRun) {
+      fullLightsRunBtn.addEventListener('click', async () => {
+        if (isRendering) return;
+        if (animationFrameId) {
+          cancelAnimationFrame(animationFrameId);
+          animationFrameId = null;
+        }
+        const rtCheckbox = document.getElementById('raytracingCheckbox');
+        const wasRT = rtCheckbox && rtCheckbox.checked;
+        if (rtCheckbox) rtCheckbox.checked = true;
+        syncIntensitySliderToMode();
+        fullLightsRunBtn.disabled = true;
+        fullLightsLastRun.textContent = 'Running…';
+        const times = [];
+        for (let i = 0; i < 10; i++) {
+          setCameraTopDown(scene, Math.random() * 2 * Math.PI);
+          const t = await renderScene(GPUApp, scene);
+          times.push(t);
+        }
+        const avg = times.reduce((a, b) => a + b, 0) / times.length;
+        fullLightsAvgMs.textContent = avg.toFixed(2);
+        fullLightsLastRun.textContent = times.map((t) => t.toFixed(0) + ' ms').join(', ');
+        fullLightsRunBtn.disabled = false;
+        if (rtCheckbox && !wasRT) rtCheckbox.checked = false;
+        syncIntensitySliderToMode();
       });
     }
   } catch (err) {
