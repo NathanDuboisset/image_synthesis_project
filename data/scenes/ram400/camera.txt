@@ -1,0 +1,7 @@
+
+# Multiply auto-computed orbit radius (smaller = closer). Default 1.0.
+radiusScale=0.55
+
+# Optional: absolute radius, yaw, pitch (radians), targetX/Y/Z
+# yaw=0
+# pitch=0.2

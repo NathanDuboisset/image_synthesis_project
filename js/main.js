@@ -1,6 +1,38 @@
-import { createScene, setCameraTopDown } from './scene.js';
+import { createScene, setCameraTopDown, setCameraRandomNorthHemisphere } from './scene.js';
 import { createGPUApp, initRenderPipeline, initGPUBuffers, updateUniforms, updateMaterialBuffer, updateLightSourceBuffer, updateDebugUniform } from './gpu.js';
 import { pan } from './camera.js';
+
+/** Get the current canvas content as a data URL (reusable for any canvas). */
+function getCanvasDataURL(canvas) {
+  return canvas.toDataURL('image/png');
+}
+
+/**
+ * Run full-lights training: generate numImages with camera on random north hemisphere.
+ * Reuses renderScene; calls onImage(index, dataUrl, timeMs) for each image as it completes.
+ * Optionally forces ray tracing on for the run and restores after.
+ */
+async function runFullLightsTraining(GPUApp, scene, numImages, options = {}) {
+  const { onImage = () => {}, forceRayTracing = true, syncIntensitySliderToMode } = options;
+  console.log('[FullLights] runFullLightsTraining started, numImages =', numImages);
+  const rtCheckbox = document.getElementById('raytracingCheckbox');
+  const wasRT = rtCheckbox && rtCheckbox.checked;
+  if (forceRayTracing && rtCheckbox) rtCheckbox.checked = true;
+  if (typeof syncIntensitySliderToMode === 'function') syncIntensitySliderToMode();
+
+  const times = [];
+  for (let i = 0; i < numImages; i++) {
+    setCameraRandomNorthHemisphere(scene);
+    const timeMs = await renderScene(GPUApp, scene);
+    times.push(timeMs);
+    const dataUrl = getCanvasDataURL(GPUApp.canvas);
+    onImage(i, dataUrl, timeMs);
+  }
+
+  if (forceRayTracing && rtCheckbox && !wasRT) rtCheckbox.checked = false;
+  if (typeof syncIntensitySliderToMode === 'function') syncIntensitySliderToMode();
+  return { times };
+}
 
 function initEvents(GPUApp, scene, renderCallback) {
   GPUApp.canvas.addEventListener('mousedown', (e) => {
@@ -42,6 +74,9 @@ function initEvents(GPUApp, scene, renderCallback) {
 async function renderScene(GPUApp, scene) {
   const useRayTracing = document.getElementById('raytracingCheckbox').checked;
   const start = performance.now();
+  if (useRayTracing) {
+    console.log('[Render] Starting image (ray tracing)', scene.lightSources?.length ?? 0, 'lights');
+  }
   const debugRenderCheckbox = document.getElementById('debug_render_checkbox');
   const debugRenderEnabled = debugRenderCheckbox && debugRenderCheckbox.checked;
   let tileCount = 0;
@@ -85,26 +120,29 @@ async function renderScene(GPUApp, scene) {
       }
     }
   } else {
-    // Ray tracing path: render the frame as a grid of tiles, submitting each tile separately
-    // to prevent TDR (Timeout Detection and Recovery) crashes.
-    const tileSize = 256;
+    // Ray tracing path: render to an offscreen texture (tiles accumulate), then copy to canvas once.
+    // This avoids swapchain reuse and ensures we see the full image. Tile size from scene camera.txt.
+    const tileSize = Math.max(32, Math.min(256, (scene.cameraConfig && typeof scene.cameraConfig.tileSize === 'number') ? scene.cameraConfig.tileSize : 256));
     const tilesX = Math.ceil(GPUApp.canvas.width / tileSize);
     const tilesY = Math.ceil(GPUApp.canvas.height / tileSize);
     tileCount = tilesX * tilesY;
-    
-    // Clear the canvas and depth buffer once before rendering tiles
+
+    const offscreenView = GPUApp.offscreenColorTexture.createView();
+    const depthView = GPUApp.depthTexture.createView();
+
+    // Clear offscreen (our texture; safe to reuse view across submits)
     const clearEncoder = GPUApp.device.createCommandEncoder();
     const clearPass = clearEncoder.beginRenderPass({
       label: 'Clear pass',
       sampleCount: 1,
       colorAttachments: [{
-        view: GPUApp.context.getCurrentTexture().createView(),
+        view: offscreenView,
         loadOp: 'clear',
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
         storeOp: 'store',
       }],
       depthStencilAttachment: {
-        view: GPUApp.depthTexture.createView(),
+        view: depthView,
         depthClearValue: 1.0,
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
@@ -112,8 +150,9 @@ async function renderScene(GPUApp, scene) {
     });
     clearPass.end();
     GPUApp.device.queue.submit([clearEncoder.finish()]);
+    await GPUApp.device.queue.onSubmittedWorkDone();
     
-    // Render each tile in its own submit to prevent TDR timeout
+    // All tiles render to offscreen (same view); submit + wait each so tiles run one-after-the-other (TDR).
     const tileTimes = debugRenderEnabled ? [] : null;
     for (let ty = 0; ty < tilesY; ty++) {
       for (let tx = 0; tx < tilesX; tx++) {
@@ -123,19 +162,18 @@ async function renderScene(GPUApp, scene) {
         const w = Math.min(tileSize, GPUApp.canvas.width - x);
         const h = Math.min(tileSize, GPUApp.canvas.height - y);
 
-        // Create a separate encoder and render pass for each tile
         const tileEncoder = GPUApp.device.createCommandEncoder();
         const tilePass = tileEncoder.beginRenderPass({
           label: `Tile ${tx},${ty}`,
           sampleCount: 1,
           colorAttachments: [{
-            view: GPUApp.context.getCurrentTexture().createView(),
-            loadOp: 'load', // Load existing content (don't clear)
+            view: offscreenView,
+            loadOp: 'load',
             storeOp: 'store',
           }],
           depthStencilAttachment: {
-            view: GPUApp.depthTexture.createView(),
-            depthLoadOp: 'load', // Load existing depth
+            view: depthView,
+            depthLoadOp: 'load',
             depthStoreOp: 'store',
           },
         });
@@ -145,13 +183,8 @@ async function renderScene(GPUApp, scene) {
         tilePass.setScissorRect(x, y, w, h);
         tilePass.draw(6);
         tilePass.end();
-        
-        // Submit this tile immediately - this resets the TDR timer
         GPUApp.device.queue.submit([tileEncoder.finish()]);
-        
-        // Optional: Let GPU drain slightly to prevent queue buildup
-        // (commented out for speed, but can be enabled if needed)
-        // await GPUApp.device.queue.onSubmittedWorkDone();
+        await GPUApp.device.queue.onSubmittedWorkDone();
         
         if (debugRenderEnabled) {
           const tileEnd = performance.now();
@@ -160,7 +193,23 @@ async function renderScene(GPUApp, scene) {
       }
     }
     
-    // Wait until all GPU work for this frame is finished
+    // Blit offscreen to swap chain (render pass; swap chain has no COPY_DST)
+    const blitEncoder = GPUApp.device.createCommandEncoder();
+    const blitPass = blitEncoder.beginRenderPass({
+      label: 'Blit to canvas',
+      sampleCount: 1,
+      colorAttachments: [{
+        view: GPUApp.context.getCurrentTexture().createView(),
+        loadOp: 'clear',
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        storeOp: 'store',
+      }],
+    });
+    blitPass.setPipeline(GPUApp.blitPipeline);
+    blitPass.setBindGroup(0, GPUApp.blitBindGroup);
+    blitPass.draw(6);
+    blitPass.end();
+    GPUApp.device.queue.submit([blitEncoder.finish()]);
     await GPUApp.device.queue.onSubmittedWorkDone();
     
     // Log tile statistics if debug is enabled
@@ -361,35 +410,59 @@ async function main() {
     const sidebarEl = document.getElementById('playground_sidebar');
     if (sidebarEl) sidebarEl.style.display = 'flex';
 
-    // Full-lights training: run 10 images with random top-down cameras, report average time
+    // Full-lights training: run N images (slider) with random north-hemisphere cameras; images appear one by one
     const fullLightsRunBtn = document.getElementById('full_lights_run_btn');
+    const fullLightsNumImagesSlider = document.getElementById('full_lights_num_images');
+    const fullLightsNumImagesValue = document.getElementById('full_lights_num_images_value');
     const fullLightsAvgMs = document.getElementById('full_lights_avg_ms');
     const fullLightsLastRun = document.getElementById('full_lights_last_run');
-    if (fullLightsRunBtn && fullLightsAvgMs && fullLightsLastRun) {
+    const fullLightsGrid = document.getElementById('full_lights_grid');
+    if (fullLightsRunBtn && fullLightsGrid) {
+      if (fullLightsNumImagesSlider && fullLightsNumImagesValue) {
+        fullLightsNumImagesSlider.addEventListener('input', () => {
+          fullLightsNumImagesValue.textContent = fullLightsNumImagesSlider.value;
+        });
+        fullLightsNumImagesValue.textContent = fullLightsNumImagesSlider.value;
+      }
       fullLightsRunBtn.addEventListener('click', async () => {
-        if (isRendering) return;
+        if (isRendering) {
+          console.log('[FullLights] Ignored click: already rendering');
+          return;
+        }
+        const numImages = Math.max(1, parseInt(fullLightsNumImagesSlider?.value || '10', 10));
+        console.log('[FullLights] Starting generation of', numImages, 'images');
         if (animationFrameId) {
           cancelAnimationFrame(animationFrameId);
           animationFrameId = null;
         }
-        const rtCheckbox = document.getElementById('raytracingCheckbox');
-        const wasRT = rtCheckbox && rtCheckbox.checked;
-        if (rtCheckbox) rtCheckbox.checked = true;
-        syncIntensitySliderToMode();
+        isRendering = true;
         fullLightsRunBtn.disabled = true;
-        fullLightsLastRun.textContent = 'Running…';
-        const times = [];
-        for (let i = 0; i < 10; i++) {
-          setCameraTopDown(scene, Math.random() * 2 * Math.PI);
-          const t = await renderScene(GPUApp, scene);
-          times.push(t);
+        fullLightsGrid.innerHTML = '';
+        if (fullLightsLastRun) fullLightsLastRun.textContent = 'Running…';
+
+        try {
+          const { times } = await runFullLightsTraining(GPUApp, scene, numImages, {
+            syncIntensitySliderToMode,
+            onImage(index, dataUrl) {
+              const img = document.createElement('img');
+              img.src = dataUrl;
+              img.alt = `Frame ${index + 1}`;
+              img.className = 'training-thumb';
+              fullLightsGrid.appendChild(img);
+            },
+          });
+
+          const avg = times.length ? times.reduce((a, b) => a + b, 0) / times.length : 0;
+          if (fullLightsAvgMs) fullLightsAvgMs.textContent = avg.toFixed(2);
+          if (fullLightsLastRun) fullLightsLastRun.textContent = times.map((t) => t.toFixed(0) + ' ms').join(', ');
+          console.log('[FullLights] Done. Average time:', avg.toFixed(2), 'ms');
+        } catch (err) {
+          console.error('[FullLights] Error:', err);
+          if (fullLightsLastRun) fullLightsLastRun.textContent = 'Error: ' + (err.message || String(err));
+        } finally {
+          isRendering = false;
+          fullLightsRunBtn.disabled = false;
         }
-        const avg = times.reduce((a, b) => a + b, 0) / times.length;
-        fullLightsAvgMs.textContent = avg.toFixed(2);
-        fullLightsLastRun.textContent = times.map((t) => t.toFixed(0) + ' ms').join(', ');
-        fullLightsRunBtn.disabled = false;
-        if (rtCheckbox && !wasRT) rtCheckbox.checked = false;
-        syncIntensitySliderToMode();
       });
     }
   } catch (err) {

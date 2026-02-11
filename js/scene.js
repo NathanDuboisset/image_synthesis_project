@@ -139,6 +139,70 @@ function fitCameraToScene(scene) {
   scene.camera.far = Math.max(radius * 10.0, scene.camera.near * 10.0);
 }
 
+/**
+ * Load camera config from data/scenes/<sceneName>/camera.txt.
+ * Format: one key=value per line; # is comment. Keys: radiusScale, radius, yaw, pitch, targetX, targetY, targetZ.
+ * Returns null if file missing or empty.
+ */
+async function loadCameraConfig(sceneName) {
+  const url = `data/scenes/${sceneName}/camera.txt`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const text = await res.text();
+    const config = {};
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq <= 0) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const value = trimmed.slice(eq + 1).trim();
+      const num = Number(value);
+      config[key] = Number.isNaN(num) ? value : num;
+    }
+    if (Object.keys(config).length === 0) return null;
+    return config;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Apply loaded camera config to scene.camera (after fitCameraToScene).
+ * Supported keys: radiusScale (multiply radius), radius (override), yaw, pitch (radians), targetX, targetY, targetZ.
+ */
+function applyCameraConfig(scene, config) {
+  if (config.radiusScale != null) {
+    scene.camera.radius *= config.radiusScale;
+    scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, scene.camera.radius));
+  }
+  if (config.radius != null) {
+    scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, config.radius));
+  }
+  if (config.yaw != null) scene.camera.yaw = config.yaw;
+  if (config.pitch != null) scene.camera.pitch = config.pitch;
+  if (config.targetX != null) scene.camera.target[0] = config.targetX;
+  if (config.targetY != null) scene.camera.target[1] = config.targetY;
+  if (config.targetZ != null) scene.camera.target[2] = config.targetZ;
+}
+
+/**
+ * Apply scene.cameraConfig radius scale to current camera.radius (used after setting
+ * radius in setCameraTopDown / setCameraRandomNorthHemisphere so config is used everywhere).
+ */
+function applyCameraConfigRadius(scene) {
+  const config = scene.cameraConfig;
+  if (!config) return;
+  if (config.radiusScale != null) {
+    scene.camera.radius *= config.radiusScale;
+    scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, scene.camera.radius));
+  }
+  if (config.radius != null) {
+    scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, config.radius));
+  }
+}
+
 function debugLightsAtPoint(label, scene, point) {
   const lights = scene.lightSources || [];
   if (!lights.length) {
@@ -256,19 +320,19 @@ function addDebugLightMeshes(scene) {
 }
 
 /**
- * Set camera to a top-down view (from above) with optional yaw (azimuth) in radians.
- * Call after createScene / fitCameraToScene so radius and target are set.
+ * Get scene bounds center and a suitable orbit radius (from mesh extents).
+ * Used by setCameraTopDown and setCameraRandomNorthHemisphere.
  */
-export function setCameraTopDown(scene, yawRad = 0) {
-  const bounds = computeMeshesBounds(scene.meshes);
-  if (!bounds) return;
+function getSceneCenterAndRadius(meshes) {
+  const bounds = computeMeshesBounds(meshes);
+  if (!bounds) return null;
   const center = [
     0.5 * (bounds.minX + bounds.maxX),
     0.5 * (bounds.minY + bounds.maxY),
     0.5 * (bounds.minZ + bounds.maxZ),
   ];
   let radiusSq = 0;
-  for (const mesh of scene.meshes) {
+  for (const mesh of meshes) {
     if (!mesh.positions || mesh.positions.length < 3) continue;
     const p = mesh.positions;
     for (let i = 0; i < p.length; i += 3) {
@@ -278,10 +342,37 @@ export function setCameraTopDown(scene, yawRad = 0) {
     }
   }
   const radius = Math.max(Math.sqrt(radiusSq), 0.1);
+  return { center, radius };
+}
+
+/**
+ * Set camera to a top-down view (from above) with optional yaw (azimuth) in radians.
+ * Respects scene.cameraConfig (radiusScale/radius) if present.
+ */
+export function setCameraTopDown(scene, yawRad = 0) {
+  const data = getSceneCenterAndRadius(scene.meshes);
+  if (!data) return;
+  const { center, radius } = data;
   scene.camera.target = center;
   scene.camera.radius = Math.min(Math.max(radius * 2.5, scene.camera.minRadius * 2), scene.camera.maxRadius);
   scene.camera.pitch = Math.PI / 2;
   scene.camera.yaw = yawRad;
+  applyCameraConfigRadius(scene);
+}
+
+/**
+ * Set camera to a random position on the north hemisphere (Y up) looking at scene center.
+ * Respects scene.cameraConfig (radiusScale/radius) if present (e.g. full-lights tab).
+ */
+export function setCameraRandomNorthHemisphere(scene) {
+  const data = getSceneCenterAndRadius(scene.meshes);
+  if (!data) return;
+  const { center, radius } = data;
+  scene.camera.target = center;
+  scene.camera.radius = Math.min(Math.max(radius * 2.5, scene.camera.minRadius * 2), scene.camera.maxRadius);
+  scene.camera.pitch = Math.random() * (Math.PI / 2);
+  scene.camera.yaw = Math.random() * 2 * Math.PI;
+  applyCameraConfigRadius(scene);
 }
 
 export async function createScene(camAspect, sceneName = 'ram') {
@@ -342,6 +433,14 @@ export async function createScene(camAspect, sceneName = 'ram') {
     console.log('[Scene] Added fallback light above scene center, total lights =', scene.lightSources.length);
   }
   fitCameraToScene(scene);
+  const cameraConfig = await loadCameraConfig(sceneName);
+  if (cameraConfig) {
+    scene.cameraConfig = cameraConfig;
+    applyCameraConfig(scene, cameraConfig);
+    console.log('[Scene] Applied camera config from camera.txt');
+  } else {
+    scene.cameraConfig = null;
+  }
 
   // Build small debug meshes at each light position so they can be
   // toggled on in raster mode.

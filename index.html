@@ -17,7 +17,7 @@
         </select>
         <nav class="tabs" role="tablist">
           <button type="button" class="tab active" data-tab="playground" role="tab" aria-selected="true">Playground</button>
-          <button type="button" class="tab" data-tab="full-lights" role="tab" aria-selected="false">Full-lights training</button>
+          <button type="button" class="tab" data-tab="full-lights" role="tab" aria-selected="false">Full-lights</button>
           <button type="button" class="tab" data-tab="stochastic" role="tab" aria-selected="false">Stochastic</button>
         </nav>
       </div>
@@ -65,15 +65,18 @@
 
       <section class="tab-panel training-panel" id="panel-full-lights" role="tabpanel" hidden>
         <div class="training-content">
-          <p>Render 10 images with full lights, one by one, from random top-down camera angles. Average time is computed.</p>
-          <button type="button" id="full_lights_run_btn">Run 10 images</button>
+          <p>Generate images with full lights, one by one; camera is random on the north hemisphere. Images appear as they are generated.</p>
+          <div class="training-controls">
+            <label for="full_lights_num_images">Number of images:</label>
+            <input type="range" id="full_lights_num_images" min="1" max="32" value="10">
+            <span id="full_lights_num_images_value">10</span>
+            <button type="button" id="full_lights_run_btn">Generate images</button>
+          </div>
           <div class="training-stats" id="full_lights_stats">
             <p>Average render time: <span id="full_lights_avg_ms">—</span> ms</p>
             <p>Last run: <span id="full_lights_last_run">—</span></p>
           </div>
-          <div class="canvas-container training-canvas-wrap">
-            <canvas id="training_canvas" width="1024" height="768"></canvas>
-          </div>
+          <div class="training-grid" id="full_lights_grid"></div>
         </div>
       </section>
 

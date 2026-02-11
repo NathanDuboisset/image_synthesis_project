@@ -22,16 +22,15 @@
 //
 // Output:
 //   Writes a file:
-//     data/scenes/<sceneName>/add_lights.txt
-//   containing OBJ lines (`v`, `usemtl`, `f`) describing an NxN grid of quads.
-//   Each quad is emitted as 2 triangles, so objLoader can collect triangle
-//   centers as light positions.
+//     data/scenes/<sceneName>/lights<nblights>.txt
+//   where nblights = lightsPerSide * lightsPerSide. File contains OBJ lines
+//   (`v`, `usemtl`, `f`) describing an NxN grid of quads. Each quad is
+//   2 triangles, so objLoader can collect triangle centers as light positions.
 //
 // Usage (Node.js only, not in browser):
-//   node -e "import('./js/addLightsPanel.js').then(m => m.createLightPanel('ram', 'RamLight', 8, 3.0, -5.0, 5.0, -5.0, 5.0));"
-//
-// You can then open add_lights.txt to check the positions and copy/paste
-// them into an OBJ authoring tool or a custom converter.
+//   node js/addLightsPanel.js <sceneName> <textureName> <lightsPerSide> <height> <minX> <maxX> <minY> <maxY>
+// Example (ram, 20 per side, height 1.4, X/Z -1.5 to 1.5):
+//   node js/addLightsPanel.js ram RamLight 20 1.4 -1.5 1.5 -1.5 1.5
 
 import fs from 'fs';
 import path from 'path';
@@ -43,7 +42,7 @@ function lerp(a, b, t) {
 
 /**
  * Generate an NxN panel of light quads over a rectangle and write them
- * as an OBJ snippet to add_lights.txt.
+ * as an OBJ snippet to lights<nblights>.txt (nblights = lightsPerSide²).
  *
  * NOTE: We interpret (minY, maxY) as a Z range (since Y is up in the scene).
  */
@@ -64,11 +63,12 @@ export function createLightPanel(
     throw new Error('textureName must be a non-empty string');
   }
   const n = Math.max(1, (lightsPerSide | 0));
+  const nblights = n * n;
 
   const thisFile = fileURLToPath(import.meta.url);
   const projectRoot = path.resolve(path.dirname(thisFile), '..');
   const sceneDir = path.join(projectRoot, 'data', 'scenes', sceneName);
-  const outPath = path.join(sceneDir, 'add_lights.txt');
+  const outPath = path.join(sceneDir, `lights${nblights}.txt`);
   const objPath = path.join(sceneDir, `${sceneName}.obj`);
 
   // Ensure scene directory and OBJ exist.
@@ -132,3 +132,20 @@ export function createLightPanel(
   console.log(`[addLightsPanel] Wrote OBJ light panel to ${outPath}`);
 }
 
+const args = process.argv.slice(2);
+if (args.length >= 8) {
+  const [sceneName, textureName, lightsPerSide, height, minX, maxX, minY, maxY] = args;
+  createLightPanel(
+    sceneName,
+    textureName,
+    Number(lightsPerSide),
+    Number(height),
+    Number(minX),
+    Number(maxX),
+    Number(minY),
+    Number(maxY),
+  );
+} else if (args.length > 0) {
+  console.error('Usage: node js/addLightsPanel.js <sceneName> <textureName> <lightsPerSide> <height> <minX> <maxX> <minY> <maxY>');
+  process.exit(1);
+}

@@ -97,14 +97,24 @@ body {
   gap: 0.35rem;
 }
 
+/* Checkbox + label: row so checkbox is before (left of) the text */
+.sidebar-section:has(input[type="checkbox"]) {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .sidebar-section label {
   font-size: 0.85rem;
   color: #d4d4d8;
+  order: 2;
 }
 
 .sidebar-section input[type="checkbox"] {
   width: auto;
-  margin-right: 0.5rem;
+  margin: 0;
+  flex-shrink: 0;
+  order: 1;
 }
 
 .sidebar-section input[type="range"] {
@@ -259,6 +269,44 @@ body {
 .training-stats span {
   font-weight: 600;
   color: #a5b4fc;
+}
+
+.training-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.training-controls label {
+  font-size: 0.9rem;
+  color: #d4d4d8;
+}
+
+.training-controls input[type="range"] {
+  width: 100px;
+}
+
+.training-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  align-content: start;
+}
+
+.training-thumb {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4/3;
+  object-fit: contain;
+  background: #18181b;
+  border-radius: 6px;
+  border: 1px solid #3f3f46;
 }
 
 .training-canvas-wrap {

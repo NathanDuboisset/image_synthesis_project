@@ -469,3 +469,34 @@ fn shadeRT(hit: Hit) -> vec4f {
     }
     return colorResponse;
   }
+
+// Blit offscreen texture to swap chain (fullscreen quad = 2 triangles, 6 vertices). Uses group 0.
+@group(0) @binding(0) var blitTex: texture_2d<f32>;
+@group(0) @binding(1) var blitSampler: sampler;
+
+struct BlitVertexOutput {
+  @builtin(position) position: vec4f,
+  @location(0) uv: vec2f,
+}
+
+@vertex
+fn blitVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput {
+  var out: BlitVertexOutput;
+  // Fullscreen quad: 6 vertices = two triangles (0,1,2) and (2,1,3). Y up in NDC.
+  let corners = array<vec2f, 4>(
+    vec2f(-1.0, 1.0), vec2f(1.0, 1.0), vec2f(-1.0, -1.0), vec2f(1.0, -1.0)
+  );
+  let uvs = array<vec2f, 4>(
+    vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(1.0, 1.0)
+  );
+  let idx = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
+  let i = idx[vi];
+  out.position = vec4f(corners[i], 0.0, 1.0);
+  out.uv = uvs[i];
+  return out;
+}
+
+@fragment
+fn blitFragmentMain(input: BlitVertexOutput) -> @location(0) vec4f {
+  return textureSample(blitTex, blitSampler, input.uv);
+}

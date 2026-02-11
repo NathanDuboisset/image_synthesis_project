@@ -146,6 +146,33 @@ export function initRenderPipeline(GPUApp, shaderCode) {
     format: 'depth24plus',
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
   });
+  GPUApp.offscreenColorTexture = GPUApp.device.createTexture({
+    label: 'RT offscreen color',
+    size: [GPUApp.canvas.width, GPUApp.canvas.height, 1],
+    format: GPUApp.canvasFormat,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  GPUApp.blitBindGroupLayout = GPUApp.device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+    ],
+  });
+  GPUApp.blitPipeline = GPUApp.device.createRenderPipeline({
+    label: 'blitPipeline',
+    layout: GPUApp.device.createPipelineLayout({ bindGroupLayouts: [GPUApp.blitBindGroupLayout] }),
+    vertex: { module: GPUApp.shaderModule, entryPoint: 'blitVertexMain' },
+    fragment: { module: GPUApp.shaderModule, entryPoint: 'blitFragmentMain', targets: [{ format: GPUApp.canvasFormat }] },
+    primitive: { topology: 'triangle-list' },
+  });
+  GPUApp.blitSampler = GPUApp.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
+  GPUApp.blitBindGroup = GPUApp.device.createBindGroup({
+    layout: GPUApp.blitBindGroupLayout,
+    entries: [
+      { binding: 0, resource: GPUApp.offscreenColorTexture.createView() },
+      { binding: 1, resource: GPUApp.blitSampler },
+    ],
+  });
   GPUApp.rayTracingPipeline = GPUApp.device.createRenderPipeline({
     label: 'rayTracingPipeline',
     layout: GPUApp.device.createPipelineLayout({ bindGroupLayouts: [GPUApp.bindGroupLayout] }),
@@ -190,6 +217,7 @@ export async function createGPUApp() {
     rasterizationPipeline: {},
     rayTracingPipeline: {},
     depthTexture: {},
+    offscreenColorTexture: null,
     uniformData: new Float32Array(88),
     debugUniformData: new Uint32Array(8),
   };
