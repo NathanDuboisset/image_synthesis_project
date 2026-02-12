@@ -70,18 +70,20 @@ export function updateMaterialBuffer(GPUApp, materials) {
 
 export function fillLightSourceStagingBuffer(GPUApp, lightSources) {
   const sizeOfLightSource = 12;
-  const useRaytracedShadows = document.getElementById('raytracingCheckbox').checked;
-  const intensityEl = typeof document !== 'undefined' ? document.getElementById('intensity_slider') : null;
-  const intensityScale = intensityEl ? Math.max(0, parseFloat(intensityEl.value) || 1) : 1;
+  const useRT = document.getElementById('raytracingCheckbox').checked;
+  // Total luminance budget for RT mode, divided equally among lights.
+  const BASE_TOTAL_LUMINANCE = 2;
+  const numLights = Math.max(1, lightSources.length);
+  const perLightIntensity = useRT ? (BASE_TOTAL_LUMINANCE / numLights) : 1.0;
   for (let i = 0; i < lightSources.length; i++) {
     const l = lightSources[i];
     const offset = i * sizeOfLightSource;
     GPUApp.lightSourceStagingBuffer.set(l.position, offset);
-    GPUApp.lightSourceStagingBuffer[offset + 3] = l.intensity * intensityScale;
+    GPUApp.lightSourceStagingBuffer[offset + 3] = useRT ? perLightIntensity : l.intensity;
     GPUApp.lightSourceStagingBuffer.set(l.color, offset + 4);
     GPUApp.lightSourceStagingBuffer[offset + 7] = l.angle;
     GPUApp.lightSourceStagingBuffer.set(l.spot, offset + 8);
-    GPUApp.lightSourceStagingBuffer[offset + 11] = useRaytracedShadows ? 1 : 0;
+    GPUApp.lightSourceStagingBuffer[offset + 11] = useRT ? 1 : 0;
   }
 }
 
@@ -184,6 +186,103 @@ export function initRenderPipeline(GPUApp, shaderCode) {
   console.log('[GPU] Pipelines and depth texture created');
 }
 
+/**
+ * Create accumulation-specific GPU resources (call once after initRenderPipeline).
+ * - accumTexture: rgba16float accumulation target
+ * - accumBlitPipeline: additive blit (blend: ONE + ONE) from offscreenColorTexture → accumTexture
+ * - accumFinalPipeline: final blit from accumTexture → swap chain, dividing by passCount
+ */
+export function initAccumulationResources(GPUApp) {
+  const w = GPUApp.canvas.width, h = GPUApp.canvas.height;
+
+  // Accumulation texture (float for additive precision)
+  GPUApp.accumTexture = GPUApp.device.createTexture({
+    label: 'Accumulation color',
+    size: [w, h, 1],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
+
+  // --- Accumulation additive blit: offscreen → accum (blend ONE+ONE) ---
+  const accumBlitBGL = GPUApp.device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+    ],
+  });
+  GPUApp.accumBlitPipeline = GPUApp.device.createRenderPipeline({
+    label: 'accumBlitPipeline',
+    layout: GPUApp.device.createPipelineLayout({ bindGroupLayouts: [accumBlitBGL] }),
+    vertex: { module: GPUApp.shaderModule, entryPoint: 'accumBlitVertexMain' },
+    fragment: {
+      module: GPUApp.shaderModule,
+      entryPoint: 'accumBlitFragmentMain',
+      targets: [{
+        format: 'rgba16float',
+        blend: {
+          color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+        },
+      }],
+    },
+    primitive: { topology: 'triangle-list' },
+  });
+  const accumSampler = GPUApp.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
+  GPUApp.accumBlitBindGroup = GPUApp.device.createBindGroup({
+    layout: accumBlitBGL,
+    entries: [
+      { binding: 0, resource: GPUApp.offscreenColorTexture.createView() },
+      { binding: 1, resource: accumSampler },
+    ],
+  });
+
+  // --- Final blit: accum → swap chain (divide by passCount) ---
+  const accumFinalBGL = GPUApp.device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+    ],
+  });
+  GPUApp.accumFinalPipeline = GPUApp.device.createRenderPipeline({
+    label: 'accumFinalPipeline',
+    layout: GPUApp.device.createPipelineLayout({ bindGroupLayouts: [accumFinalBGL] }),
+    vertex: { module: GPUApp.shaderModule, entryPoint: 'accumFinalVertexMain' },
+    fragment: {
+      module: GPUApp.shaderModule,
+      entryPoint: 'accumFinalFragmentMain',
+      targets: [{ format: GPUApp.canvasFormat }],
+    },
+    primitive: { topology: 'triangle-list' },
+  });
+
+  // Uniform for invPassCount (16 bytes for alignment: 1 float + 3 padding)
+  GPUApp.accumFinalUniformData = new Float32Array(8);
+  GPUApp.accumFinalUniformBuffer = GPUApp.device.createBuffer({
+    size: 32,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  GPUApp.accumFinalBindGroup = GPUApp.device.createBindGroup({
+    layout: accumFinalBGL,
+    entries: [
+      { binding: 0, resource: GPUApp.accumTexture.createView() },
+      { binding: 1, resource: accumSampler },
+      { binding: 2, resource: { buffer: GPUApp.accumFinalUniformBuffer } },
+    ],
+  });
+
+  console.log('[GPU] Accumulation resources created');
+}
+
+/**
+ * Write invPassCount to the accumulation final uniform buffer.
+ */
+export function updateAccumFinalPassCount(GPUApp, passCount) {
+  GPUApp.accumFinalUniformData[0] = 1.0 / Math.max(1, passCount);
+  GPUApp.device.queue.writeBuffer(GPUApp.accumFinalUniformBuffer, 0, GPUApp.accumFinalUniformData);
+}
+
 export async function createGPUApp() {
   if (!navigator.gpu) {
     console.error('[GPU] navigator.gpu not available');
@@ -191,7 +290,9 @@ export async function createGPUApp() {
   }
   const canvas = document.querySelector('canvas');
   console.log('[GPU] Canvas size:', canvas.width, 'x', canvas.height);
-  const adapter = await navigator.gpu.requestAdapter();
+  const adapter = await navigator.gpu.requestAdapter({
+    powerPreference: 'high-performance'
+  });
   if (!adapter) {
     console.error('[GPU] requestAdapter() returned null');
     throw new Error('No appropriate GPUAdapter found.');

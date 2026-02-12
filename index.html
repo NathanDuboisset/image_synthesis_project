@@ -1,98 +1,143 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Stochastic Light Cuts</title>
-    <link rel="stylesheet" href="styles.css">
-  </head>
-  <body>
-    <header class="app-header">
-      <div class="header-row">
-        <label for="scene_select">Scene:</label>
-        <select id="scene_select">
-          <option value="ram" selected>ram</option>
-          <option value="sponza">sponza</option>
-          <option value="conference">conference</option>
-        </select>
-        <nav class="tabs" role="tablist">
-          <button type="button" class="tab active" data-tab="playground" role="tab" aria-selected="true">Playground</button>
-          <button type="button" class="tab" data-tab="full-lights" role="tab" aria-selected="false">Full-lights</button>
-          <button type="button" class="tab" data-tab="stochastic" role="tab" aria-selected="false">Stochastic</button>
-        </nav>
-      </div>
-    </header>
 
-    <main class="app-main">
-      <aside class="sidebar" id="playground_sidebar">
-        <div class="sidebar-section">
-          <input type="checkbox" id="raytracingCheckbox">
-          <label for="raytracingCheckbox">Ray tracing + shadows</label>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stochastic Light Cuts</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <header class="app-header">
+    <div class="header-row">
+      <label for="scene_select">Scene:</label>
+      <select id="scene_select">
+        <option value="ram" selected>ram</option>
+        <option value="sponza">sponza</option>
+        <option value="conference">conference</option>
+      </select>
+      <nav class="tabs" role="tablist">
+        <button type="button" class="tab active" data-tab="playground" role="tab"
+          aria-selected="true">Playground</button>
+        <button type="button" class="tab" data-tab="full-lights" role="tab" aria-selected="false">Full-lights</button>
+        <button type="button" class="tab" data-tab="stochastic" role="tab" aria-selected="false">Stochastic</button>
+        <button type="button" class="tab" data-tab="lightcut" role="tab" aria-selected="false">Lightcut Tree</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <aside class="sidebar" id="playground_sidebar">
+      <div class="sidebar-section">
+        <input type="checkbox" id="raytracingCheckbox">
+        <label for="raytracingCheckbox">Ray tracing + shadows</label>
+      </div>
+      <div class="sidebar-section">
+        <button type="button" id="render_button">Generate image</button>
+        <span id="render_time_label"></span>
+      </div>
+      <div class="sidebar-section">
+        <label for="render_method_select">Render method:</label>
+        <select id="render_method_select">
+          <option value="tiles" selected>Tiles (Default)</option>
+          <option value="oneshot">One Shot</option>
+          <option value="accumulation">Accumulation</option>
+        </select>
+      </div>
+      <div class="sidebar-section">
+        <input type="checkbox" id="debug_render_checkbox" checked>
+        <label for="debug_render_checkbox">Debug render</label>
+      </div>
+      <div class="sidebar-section">
+        <input type="checkbox" id="debug_lights_checkbox" checked>
+        <label for="debug_lights_checkbox">Debug lights</label>
+      </div>
+      <div class="sidebar-section">
+        <label for="debug_mode_select">RT debug mode:</label>
+        <select id="debug_mode_select">
+          <option value="0" selected>0 - Normal PBR</option>
+          <option value="1">1 - Visible light count</option>
+          <option value="2">2 - Raw albedo</option>
+          <option value="3">3 - World normals</option>
+        </select>
+      </div>
+    </aside>
+
+    <section class="tab-panel active" id="panel-playground" role="tabpanel">
+      <div class="canvas-container">
+        <canvas width="1024" height="768"></canvas>
+      </div>
+    </section>
+
+    <section class="tab-panel training-panel" id="panel-full-lights" role="tabpanel" hidden>
+      <div class="training-content">
+        <p>Generate images with full lights, one by one; camera is random on the north hemisphere. Images appear as they
+          are generated.</p>
+        <div class="training-controls">
+          <label for="render_method_select_training">Method:</label>
+          <select id="render_method_select_training" style="margin-right: 1rem;">
+            <option value="tiles" selected>Tiles</option>
+            <option value="oneshot">One Shot</option>
+            <option value="accumulation">Accumulation</option>
+          </select>
+          <label for="full_lights_num_images">Number of images:</label>
+          <input type="range" id="full_lights_num_images" min="1" max="32" value="10">
+          <span id="full_lights_num_images_value">10</span>
+          <button type="button" id="full_lights_run_btn">Generate images</button>
         </div>
-        <div class="sidebar-section">
-          <button type="button" id="render_button">Generate image</button>
-          <span id="render_time_label"></span>
+        <div class="training-stats" id="full_lights_stats">
+          <p>Average render time: <span id="full_lights_avg_ms">—</span> ms</p>
+          <p>Last run: <span id="full_lights_last_run">—</span></p>
         </div>
-        <div class="sidebar-section">
-          <input type="checkbox" id="debug_render_checkbox" checked>
-          <label for="debug_render_checkbox">Debug render</label>
+        <div class="training-grid" id="full_lights_grid"></div>
+      </div>
+    </section>
+
+    <section class="tab-panel training-panel" id="panel-stochastic" role="tabpanel" hidden>
+      <div class="training-content">
+        <p>Stochastic method benchmarks (to be implemented). Same structure as Full-lights: run N images, report average
+          time.</p>
+        <button type="button" id="stochastic_run_btn" disabled>Run 10 images (coming next)</button>
+        <div class="training-stats" id="stochastic_stats">
+          <p>Average render time: <span id="stochastic_avg_ms">—</span> ms</p>
+          <p>Last run: <span id="stochastic_last_run">—</span></p>
         </div>
-        <div class="sidebar-section">
-          <input type="checkbox" id="debug_lights_checkbox" checked>
-          <label for="debug_lights_checkbox">Debug lights</label>
-        </div>
-        <div class="sidebar-section">
-          <label for="intensity_slider">Intensity:</label>
-          <input type="range" id="intensity_slider" min="0" max="3" step="0.1" value="1">
-          <span id="intensity_value">1</span>
-        </div>
-        <div class="sidebar-section">
-          <label for="debug_mode_select">RT debug mode:</label>
-          <select id="debug_mode_select">
-            <option value="0" selected>0 - Normal PBR</option>
-            <option value="1">1 - Visible light count</option>
-            <option value="2">2 - Raw albedo</option>
-            <option value="3">3 - World normals</option>
+      </div>
+    </section>
+
+    <section class="tab-panel lightcut-panel" id="panel-lightcut" role="tabpanel" hidden>
+      <div class="lightcut-sidebar">
+        <h3 class="lightcut-title">Lightcut Tree</h3>
+        <div class="lightcut-control-group">
+          <label for="lightcut_method_select">Build method:</label>
+          <select id="lightcut_method_select">
+            <option value="bruteforce" selected>Brute Force</option>
+            <option value="kdtree">KD-Tree</option>
           </select>
         </div>
-      </aside>
-
-      <section class="tab-panel active" id="panel-playground" role="tabpanel">
-        <div class="canvas-container">
-          <canvas width="1024" height="768"></canvas>
+        <div class="lightcut-control-group">
+          <button type="button" id="lightcut_build_btn">Build Tree</button>
         </div>
-      </section>
-
-      <section class="tab-panel training-panel" id="panel-full-lights" role="tabpanel" hidden>
-        <div class="training-content">
-          <p>Generate images with full lights, one by one; camera is random on the north hemisphere. Images appear as they are generated.</p>
-          <div class="training-controls">
-            <label for="full_lights_num_images">Number of images:</label>
-            <input type="range" id="full_lights_num_images" min="1" max="32" value="10">
-            <span id="full_lights_num_images_value">10</span>
-            <button type="button" id="full_lights_run_btn">Generate images</button>
-          </div>
-          <div class="training-stats" id="full_lights_stats">
-            <p>Average render time: <span id="full_lights_avg_ms">—</span> ms</p>
-            <p>Last run: <span id="full_lights_last_run">—</span></p>
-          </div>
-          <div class="training-grid" id="full_lights_grid"></div>
+        <div class="lightcut-control-group">
+          <label for="lightcut_depth_slider">Depth (rank): <span id="lightcut_depth_value">0</span></label>
+          <input type="range" id="lightcut_depth_slider" min="0" max="0" value="0" disabled>
         </div>
-      </section>
-
-      <section class="tab-panel training-panel" id="panel-stochastic" role="tabpanel" hidden>
-        <div class="training-content">
-          <p>Stochastic method benchmarks (to be implemented). Same structure as Full-lights: run N images, report average time.</p>
-          <button type="button" id="stochastic_run_btn" disabled>Run 10 images (coming next)</button>
-          <div class="training-stats" id="stochastic_stats">
-            <p>Average render time: <span id="stochastic_avg_ms">—</span> ms</p>
-            <p>Last run: <span id="stochastic_last_run">—</span></p>
-          </div>
+        <div class="lightcut-stats" id="lightcut_stats">
+          <p>Tree depth: <span id="lightcut_max_depth">—</span></p>
+          <p>Nodes at rank: <span id="lightcut_node_count">—</span></p>
+          <p>Total lights: <span id="lightcut_total_lights">—</span></p>
+          <p>Build time: <span id="lightcut_build_time">—</span></p>
         </div>
-      </section>
-    </main>
+      </div>
+      <div class="lightcut-canvas-area">
+        <canvas id="lightcut_canvas" width="1024" height="768"></canvas>
+      </div>
+    </section>
+  </main>
 
-    <div class="description-container"></div>
-    <script type="module" src="js/main.js"></script>
-  </body>
+  <div class="description-container"></div>
+  <script type="module" src="js/main.js"></script>
+</body>
+
 </html>

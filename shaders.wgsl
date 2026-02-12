@@ -226,6 +226,11 @@ fn computeRadiance(position: vec3f, normal: vec3f, materialIndex: u32, wo: vec3f
 
 @fragment
   fn rasterFragmentMain(input: RasterVertexOutput) -> @location(0) vec4f {
+    // Debug mode 2: raw albedo — output material color directly, no lighting.
+    let m = materials[input.materialIndex];
+    if (debugParams.mode == 2u) {
+      return vec4f(m.albedo, 1.0);
+    }
     let position = input.position;
     let normal = normalize(input.normal);
     let wo = normalize(-position);

@@ -1,11 +1,27 @@
 import { createScene, setCameraTopDown, setCameraRandomNorthHemisphere } from './scene.js';
-import { createGPUApp, initRenderPipeline, initGPUBuffers, updateUniforms, updateMaterialBuffer, updateLightSourceBuffer, updateDebugUniform } from './gpu.js';
+import { createGPUApp, initRenderPipeline, initGPUBuffers, updateUniforms, updateMaterialBuffer, updateLightSourceBuffer, updateDebugUniform, initAccumulationResources, updateLightRange, updateAccumFinalPassCount } from './gpu.js';
 import { pan } from './camera.js';
+import { buildLightcutTreeBruteForce, buildLightcutTreeKDTree, getNodesAtDepth, getTreeMaxDepth } from './lightcutTree.js';
+import { createBBoxMeshes, createIntensityMaterials } from './lightcutViz.js';
 
 // Tile ratio controlling ray-tracing tile size vs. light count:
 // tileSize ≈ TILERATIO / numLights, clamped to [32, 256].
 // Example: with TILERATIO = 12800 → 100 lights → 128px tiles, 400 lights → 32px tiles.
-const TILERATIO = 64000;
+const TILERATIO = 128000;
+
+// Number of lights rendered per pass in accumulation mode.
+const LIGHTS_PER_PASS = 10;
+
+/** Read the current render method from the UI selector (context-aware: Playground vs Training). */
+function getSelectedRenderMethod() {
+  const fullLightsPanel = document.getElementById('panel-full-lights');
+  if (fullLightsPanel && !fullLightsPanel.hidden && fullLightsPanel.classList.contains('active')) {
+    const selTrain = document.getElementById('render_method_select_training');
+    return selTrain ? selTrain.value : 'tiles';
+  }
+  const sel = document.getElementById('render_method_select');
+  return sel ? sel.value : 'tiles'; // fallback to tiles
+}
 
 /** Get the current canvas content as a data URL (reusable for any canvas). */
 function getCanvasDataURL(canvas) {
@@ -18,12 +34,11 @@ function getCanvasDataURL(canvas) {
  * Optionally forces ray tracing on for the run and restores after.
  */
 async function runFullLightsTraining(GPUApp, scene, numImages, options = {}) {
-  const { onImage = () => {}, forceRayTracing = true, syncIntensitySliderToMode } = options;
+  const { onImage = () => { }, forceRayTracing = true } = options;
   console.log('[FullLights] runFullLightsTraining started, numImages =', numImages);
   const rtCheckbox = document.getElementById('raytracingCheckbox');
   const wasRT = rtCheckbox && rtCheckbox.checked;
   if (forceRayTracing && rtCheckbox) rtCheckbox.checked = true;
-  if (typeof syncIntensitySliderToMode === 'function') syncIntensitySliderToMode();
 
   const times = [];
   for (let i = 0; i < numImages; i++) {
@@ -35,7 +50,6 @@ async function runFullLightsTraining(GPUApp, scene, numImages, options = {}) {
   }
 
   if (forceRayTracing && rtCheckbox && !wasRT) rtCheckbox.checked = false;
-  if (typeof syncIntensitySliderToMode === 'function') syncIntensitySliderToMode();
   return { times };
 }
 
@@ -78,21 +92,33 @@ function initEvents(GPUApp, scene, renderCallback) {
 
 async function renderScene(GPUApp, scene) {
   const useRayTracing = document.getElementById('raytracingCheckbox').checked;
-  const start = performance.now();
-  if (useRayTracing) {
-    console.log('[Render] Starting image (ray tracing)', scene.lightSources?.length ?? 0, 'lights');
-  }
-  const debugRenderCheckbox = document.getElementById('debug_render_checkbox');
-  const debugRenderEnabled = debugRenderCheckbox && debugRenderCheckbox.checked;
-  let tileCount = 0;
+  const method = getSelectedRenderMethod();
 
+  // For non-ray-tracing, always use the standard raster path regardless of method.
+  if (!useRayTracing) {
+    return renderSceneRaster(GPUApp, scene);
+  }
+
+  // Ray tracing dispatch based on method.
+  if (method === 'accumulation') {
+    return renderSceneAccumulation(GPUApp, scene);
+  } else if (method === 'oneshot') {
+    return renderSceneOneShot(GPUApp, scene);
+  } else {
+    return renderSceneTiles(GPUApp, scene);
+  }
+}
+
+/** Rasterization path (unchanged from original logic). */
+async function renderSceneRaster(GPUApp, scene) {
+  const start = performance.now();
   updateUniforms(GPUApp, scene);
   updateDebugUniform(GPUApp);
   updateMaterialBuffer(GPUApp, scene.materials);
   updateLightSourceBuffer(GPUApp, scene.lightSources);
   const encoder = GPUApp.device.createCommandEncoder();
   const renderPass = encoder.beginRenderPass({
-    label: 'Main rendering pass',
+    label: 'Raster pass',
     sampleCount: 1,
     colorAttachments: [{
       view: GPUApp.context.getCurrentTexture().createView(),
@@ -107,107 +133,338 @@ async function renderScene(GPUApp, scene) {
       depthStoreOp: 'store',
     },
   });
-  renderPass.setPipeline(useRayTracing ? GPUApp.rayTracingPipeline : GPUApp.rasterizationPipeline);
+  renderPass.setPipeline(GPUApp.rasterizationPipeline);
   renderPass.setBindGroup(0, GPUApp.bindGroup);
-  if (!useRayTracing) {
-    const debugCheckbox = document.getElementById('debug_lights_checkbox');
-    const debugOn = debugCheckbox && debugCheckbox.checked;
-    const baseMeshCount = typeof scene.baseMeshCount === 'number' ? scene.baseMeshCount : scene.meshes.length;
-
-    // Draw main scene meshes.
-    for (let i = 0; i < baseMeshCount; i++) {
+  const debugCheckbox = document.getElementById('debug_lights_checkbox');
+  const debugOn = debugCheckbox && debugCheckbox.checked;
+  const baseMeshCount = typeof scene.baseMeshCount === 'number' ? scene.baseMeshCount : scene.meshes.length;
+  for (let i = 0; i < baseMeshCount; i++) {
+    renderPass.draw(scene.meshes[i].indices.length, 1, 0, i);
+  }
+  if (debugOn) {
+    for (let i = baseMeshCount; i < scene.meshes.length; i++) {
       renderPass.draw(scene.meshes[i].indices.length, 1, 0, i);
     }
-    // Optionally draw debug light marker meshes.
-    if (debugOn) {
-      for (let i = baseMeshCount; i < scene.meshes.length; i++) {
-        renderPass.draw(scene.meshes[i].indices.length, 1, 0, i);
+  }
+  renderPass.end();
+  GPUApp.device.queue.submit([encoder.finish()]);
+  await GPUApp.device.queue.onSubmittedWorkDone();
+  const end = performance.now();
+  const frameMs = end - start;
+  const label = document.getElementById('render_time_label');
+  if (label) label.textContent = `${frameMs.toFixed(3)} ms`;
+  return frameMs;
+}
+
+/** One-shot RT: render the full screen in a single dispatch (all lights, no tiling). */
+async function renderSceneOneShot(GPUApp, scene) {
+  const start = performance.now();
+  const debugRenderCheckbox = document.getElementById('debug_render_checkbox');
+  const debugRenderEnabled = debugRenderCheckbox && debugRenderCheckbox.checked;
+  if (debugRenderEnabled) {
+    console.log('[Render] Starting image (one-shot RT)', scene.lightSources?.length ?? 0, 'lights');
+  }
+  updateUniforms(GPUApp, scene);
+  updateDebugUniform(GPUApp);
+  updateMaterialBuffer(GPUApp, scene.materials);
+  updateLightSourceBuffer(GPUApp, scene.lightSources);
+
+  const offscreenView = GPUApp.offscreenColorTexture.createView();
+  const depthView = GPUApp.depthTexture.createView();
+
+  // Clear + render in one pass
+  const encoder = GPUApp.device.createCommandEncoder();
+  const pass = encoder.beginRenderPass({
+    label: 'One-shot RT',
+    sampleCount: 1,
+    colorAttachments: [{
+      view: offscreenView,
+      loadOp: 'clear',
+      clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      storeOp: 'store',
+    }],
+    depthStencilAttachment: {
+      view: depthView,
+      depthClearValue: 1.0,
+      depthLoadOp: 'clear',
+      depthStoreOp: 'store',
+    },
+  });
+  pass.setPipeline(GPUApp.rayTracingPipeline);
+  pass.setBindGroup(0, GPUApp.bindGroup);
+  pass.draw(6);
+  pass.end();
+  GPUApp.device.queue.submit([encoder.finish()]);
+  await GPUApp.device.queue.onSubmittedWorkDone();
+
+  // Blit to swap chain
+  const blitEncoder = GPUApp.device.createCommandEncoder();
+  const blitPass = blitEncoder.beginRenderPass({
+    label: 'Blit to canvas',
+    sampleCount: 1,
+    colorAttachments: [{
+      view: GPUApp.context.getCurrentTexture().createView(),
+      loadOp: 'clear',
+      clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      storeOp: 'store',
+    }],
+  });
+  blitPass.setPipeline(GPUApp.blitPipeline);
+  blitPass.setBindGroup(0, GPUApp.blitBindGroup);
+  blitPass.draw(6);
+  blitPass.end();
+  GPUApp.device.queue.submit([blitEncoder.finish()]);
+  await GPUApp.device.queue.onSubmittedWorkDone();
+
+  const end = performance.now();
+  const frameMs = end - start;
+  if (debugRenderEnabled) {
+    console.log('[Render] One-shot frame in', frameMs.toFixed(3), 'ms');
+  }
+  const label = document.getElementById('render_time_label');
+  if (label) label.textContent = `${frameMs.toFixed(3)} ms`;
+  return frameMs;
+}
+
+/** Tiled RT: split canvas into tiles, render each sequentially (original approach). */
+async function renderSceneTiles(GPUApp, scene) {
+  const start = performance.now();
+  const debugRenderCheckbox = document.getElementById('debug_render_checkbox');
+  const debugRenderEnabled = debugRenderCheckbox && debugRenderCheckbox.checked;
+  if (debugRenderEnabled) {
+    console.log('[Render] Starting image (tiled RT)', scene.lightSources?.length ?? 0, 'lights');
+  }
+  updateUniforms(GPUApp, scene);
+  updateDebugUniform(GPUApp);
+  updateMaterialBuffer(GPUApp, scene.materials);
+  updateLightSourceBuffer(GPUApp, scene.lightSources);
+
+  const numLights = Math.max(1, scene.lightSources?.length ?? 1);
+  const desiredTileSize = TILERATIO / numLights;
+  const baseTileSize = Number.isFinite(desiredTileSize) && desiredTileSize > 0
+    ? desiredTileSize
+    : ((scene.cameraConfig && typeof scene.cameraConfig.tileSize === 'number') ? scene.cameraConfig.tileSize : 256);
+  const tileSize = Math.max(32, Math.min(256, Math.round(baseTileSize)));
+  const tilesX = Math.ceil(GPUApp.canvas.width / tileSize);
+  const tilesY = Math.ceil(GPUApp.canvas.height / tileSize);
+  const tileCount = tilesX * tilesY;
+
+  const offscreenView = GPUApp.offscreenColorTexture.createView();
+  const depthView = GPUApp.depthTexture.createView();
+
+  // Clear offscreen
+  const clearEncoder = GPUApp.device.createCommandEncoder();
+  const clearPass = clearEncoder.beginRenderPass({
+    label: 'Clear pass',
+    sampleCount: 1,
+    colorAttachments: [{
+      view: offscreenView,
+      loadOp: 'clear',
+      clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      storeOp: 'store',
+    }],
+    depthStencilAttachment: {
+      view: depthView,
+      depthClearValue: 1.0,
+      depthLoadOp: 'clear',
+      depthStoreOp: 'store',
+    },
+  });
+  clearPass.end();
+  GPUApp.device.queue.submit([clearEncoder.finish()]);
+  await GPUApp.device.queue.onSubmittedWorkDone();
+
+  const tileTimes = debugRenderEnabled ? [] : null;
+  for (let ty = 0; ty < tilesY; ty++) {
+    for (let tx = 0; tx < tilesX; tx++) {
+      const tileStart = debugRenderEnabled ? performance.now() : 0;
+      const x = tx * tileSize;
+      const y = ty * tileSize;
+      const w = Math.min(tileSize, GPUApp.canvas.width - x);
+      const h = Math.min(tileSize, GPUApp.canvas.height - y);
+
+      const tileEncoder = GPUApp.device.createCommandEncoder();
+      const tilePass = tileEncoder.beginRenderPass({
+        label: `Tile ${tx},${ty}`,
+        sampleCount: 1,
+        colorAttachments: [{
+          view: offscreenView,
+          loadOp: 'load',
+          storeOp: 'store',
+        }],
+        depthStencilAttachment: {
+          view: depthView,
+          depthLoadOp: 'load',
+          depthStoreOp: 'store',
+        },
+      });
+      tilePass.setPipeline(GPUApp.rayTracingPipeline);
+      tilePass.setBindGroup(0, GPUApp.bindGroup);
+      tilePass.setViewport(x, y, w, h, 0.0, 1.0);
+      tilePass.setScissorRect(x, y, w, h);
+      tilePass.draw(6);
+      tilePass.end();
+      GPUApp.device.queue.submit([tileEncoder.finish()]);
+      await GPUApp.device.queue.onSubmittedWorkDone();
+
+      if (debugRenderEnabled) {
+        const tileEnd = performance.now();
+        tileTimes.push(tileEnd - tileStart);
+      }
+      if ((tx + ty * tilesX) % 10 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0));
       }
     }
-  } else {
-    const numLights = Math.max(1, scene.lightSources?.length ?? 1);
-    const desiredTileSize = TILERATIO / numLights;
-    const baseTileSize = Number.isFinite(desiredTileSize) && desiredTileSize > 0
-      ? desiredTileSize
-      : ((scene.cameraConfig && typeof scene.cameraConfig.tileSize === 'number') ? scene.cameraConfig.tileSize : 256);
-    const tileSize = Math.max(32, Math.min(256, Math.round(baseTileSize)));
-    const tilesX = Math.ceil(GPUApp.canvas.width / tileSize);
-    const tilesY = Math.ceil(GPUApp.canvas.height / tileSize);
-    tileCount = tilesX * tilesY;
+  }
 
-    const offscreenView = GPUApp.offscreenColorTexture.createView();
-    const depthView = GPUApp.depthTexture.createView();
+  // Blit offscreen to swap chain
+  const blitEncoder = GPUApp.device.createCommandEncoder();
+  const blitPass = blitEncoder.beginRenderPass({
+    label: 'Blit to canvas',
+    sampleCount: 1,
+    colorAttachments: [{
+      view: GPUApp.context.getCurrentTexture().createView(),
+      loadOp: 'clear',
+      clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      storeOp: 'store',
+    }],
+  });
+  blitPass.setPipeline(GPUApp.blitPipeline);
+  blitPass.setBindGroup(0, GPUApp.blitBindGroup);
+  blitPass.draw(6);
+  blitPass.end();
+  GPUApp.device.queue.submit([blitEncoder.finish()]);
+  await GPUApp.device.queue.onSubmittedWorkDone();
 
-    // Clear offscreen (our texture; safe to reuse view across submits)
-    const clearEncoder = GPUApp.device.createCommandEncoder();
-    const clearPass = clearEncoder.beginRenderPass({
-      label: 'Clear pass',
+  if (debugRenderEnabled && tileTimes && tileTimes.length > 0) {
+    const totalTileMs = tileTimes.reduce((acc, t) => acc + t, 0);
+    const meanTileMs = totalTileMs / tileCount;
+    let variance = 0;
+    for (let i = 0; i < tileCount; i++) {
+      const d = tileTimes[i] - meanTileMs;
+      variance += d * d;
+    }
+    variance /= tileCount;
+    console.log('[Render][Tiles] total time =', totalTileMs.toFixed(3), 'ms, tiles =', tileCount, ', mean =', meanTileMs.toFixed(3), 'ms, variance =', variance.toFixed(3), 'ms^2');
+  }
+
+  const end = performance.now();
+  const frameMs = end - start;
+  if (debugRenderEnabled) {
+    console.log('[Render] Tiled frame in', frameMs.toFixed(3), 'ms');
+  }
+  const label = document.getElementById('render_time_label');
+  if (label) label.textContent = `${frameMs.toFixed(3)} ms`;
+  return frameMs;
+}
+
+/**
+ * Accumulation RT: render multiple passes, each with K lights, accumulate additively,
+ * then final-blit with 1/N division.
+ */
+async function renderSceneAccumulation(GPUApp, scene) {
+  const start = performance.now();
+  const debugRenderCheckbox = document.getElementById('debug_render_checkbox');
+  const debugRenderEnabled = debugRenderCheckbox && debugRenderCheckbox.checked;
+  const totalLights = scene.lightSources?.length ?? 0;
+  const numPasses = Math.max(1, Math.ceil(totalLights / LIGHTS_PER_PASS));
+  if (debugRenderEnabled) {
+    console.log('[Render] Starting accumulation RT:', totalLights, 'lights,', numPasses, 'passes of', LIGHTS_PER_PASS);
+  }
+
+  updateUniforms(GPUApp, scene);
+  updateDebugUniform(GPUApp);
+  updateMaterialBuffer(GPUApp, scene.materials);
+  updateLightSourceBuffer(GPUApp, scene.lightSources);
+
+  const offscreenView = GPUApp.offscreenColorTexture.createView();
+  const depthView = GPUApp.depthTexture.createView();
+  const accumView = GPUApp.accumTexture.createView();
+
+  // Clear accumulation texture to black
+  {
+    const enc = GPUApp.device.createCommandEncoder();
+    const pass = enc.beginRenderPass({
+      label: 'Clear accum',
       sampleCount: 1,
       colorAttachments: [{
-        view: offscreenView,
+        view: accumView,
         loadOp: 'clear',
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        clearValue: { r: 0, g: 0, b: 0, a: 0 }, // Transparent black
         storeOp: 'store',
       }],
-      depthStencilAttachment: {
-        view: depthView,
-        depthClearValue: 1.0,
-        depthLoadOp: 'clear',
-        depthStoreOp: 'store',
-      },
     });
-    clearPass.end();
-    GPUApp.device.queue.submit([clearEncoder.finish()]);
+    pass.end();
+    GPUApp.device.queue.submit([enc.finish()]);
     await GPUApp.device.queue.onSubmittedWorkDone();
-    
-    // All tiles render to offscreen (same view); submit + wait each so tiles run one-after-the-other (TDR).
-    const tileTimes = debugRenderEnabled ? [] : null;
-    for (let ty = 0; ty < tilesY; ty++) {
-      for (let tx = 0; tx < tilesX; tx++) {
-        const tileStart = debugRenderEnabled ? performance.now() : 0;
-        const x = tx * tileSize;
-        const y = ty * tileSize;
-        const w = Math.min(tileSize, GPUApp.canvas.width - x);
-        const h = Math.min(tileSize, GPUApp.canvas.height - y);
+  }
 
-        const tileEncoder = GPUApp.device.createCommandEncoder();
-        const tilePass = tileEncoder.beginRenderPass({
-          label: `Tile ${tx},${ty}`,
-          sampleCount: 1,
-          colorAttachments: [{
-            view: offscreenView,
-            loadOp: 'load',
-            storeOp: 'store',
-          }],
-          depthStencilAttachment: {
-            view: depthView,
-            depthLoadOp: 'load',
-            depthStoreOp: 'store',
-          },
-        });
-        tilePass.setPipeline(GPUApp.rayTracingPipeline);
-        tilePass.setBindGroup(0, GPUApp.bindGroup);
-        tilePass.setViewport(x, y, w, h, 0.0, 1.0);
-        tilePass.setScissorRect(x, y, w, h);
-        tilePass.draw(6);
-        tilePass.end();
-        GPUApp.device.queue.submit([tileEncoder.finish()]);
-        await GPUApp.device.queue.onSubmittedWorkDone();
-        
-        if (debugRenderEnabled) {
-          const tileEnd = performance.now();
-          tileTimes.push(tileEnd - tileStart);
-        }
-        if ((tx + ty * tilesX) % 10 === 0) { // Every 10 tiles, take a tiny break
-          await new Promise(resolve => setTimeout(resolve, 0));
-        }
-      }
+  for (let p = 0; p < numPasses; p++) {
+    const lightStart = p * LIGHTS_PER_PASS;
+    const lightEnd = Math.min(lightStart + LIGHTS_PER_PASS, totalLights);
+
+    // Set the light range for this pass
+    updateLightRange(GPUApp, lightStart, lightEnd);
+
+    // Render full screen to offscreen texture (clear each pass)
+    {
+      const enc = GPUApp.device.createCommandEncoder();
+      const pass = enc.beginRenderPass({
+        label: `Accum pass ${p}`,
+        sampleCount: 1,
+        colorAttachments: [{
+          view: offscreenView,
+          loadOp: 'clear',
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          storeOp: 'store',
+        }],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1.0,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'store',
+        },
+      });
+      pass.setPipeline(GPUApp.rayTracingPipeline);
+      pass.setBindGroup(0, GPUApp.bindGroup);
+      pass.draw(6);
+      pass.end();
+      GPUApp.device.queue.submit([enc.finish()]);
+      await GPUApp.device.queue.onSubmittedWorkDone();
     }
-    
-    // Blit offscreen to swap chain (render pass; swap chain has no COPY_DST)
-    const blitEncoder = GPUApp.device.createCommandEncoder();
-    const blitPass = blitEncoder.beginRenderPass({
-      label: 'Blit to canvas',
+
+    // Additive blit: offscreen → accumulation texture (blend ONE+ONE)
+    {
+      const enc = GPUApp.device.createCommandEncoder();
+      const pass = enc.beginRenderPass({
+        label: `Accum blit ${p}`,
+        sampleCount: 1,
+        colorAttachments: [{
+          view: accumView,
+          loadOp: 'load',
+          storeOp: 'store',
+        }],
+      });
+      pass.setPipeline(GPUApp.accumBlitPipeline);
+      pass.setBindGroup(0, GPUApp.accumBlitBindGroup);
+      pass.draw(6);
+      pass.end();
+      GPUApp.device.queue.submit([enc.finish()]);
+      await GPUApp.device.queue.onSubmittedWorkDone();
+    }
+
+    // Yield to browser periodically
+    if (p % 5 === 4) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  // Final blit: accumulation texture → swap chain, dividing by numPasses
+  updateAccumFinalPassCount(GPUApp, numPasses);
+  {
+    const enc = GPUApp.device.createCommandEncoder();
+    const pass = enc.beginRenderPass({
+      label: 'Accum final blit',
       sampleCount: 1,
       colorAttachments: [{
         view: GPUApp.context.getCurrentTexture().createView(),
@@ -216,45 +473,21 @@ async function renderScene(GPUApp, scene) {
         storeOp: 'store',
       }],
     });
-    blitPass.setPipeline(GPUApp.blitPipeline);
-    blitPass.setBindGroup(0, GPUApp.blitBindGroup);
-    blitPass.draw(6);
-    blitPass.end();
-    GPUApp.device.queue.submit([blitEncoder.finish()]);
-    await GPUApp.device.queue.onSubmittedWorkDone();
-    
-    // Log tile statistics if debug is enabled
-    if (debugRenderEnabled && tileTimes && tileTimes.length > 0) {
-      const totalTileMs = tileTimes.reduce((acc, t) => acc + t, 0);
-      const meanTileMs = totalTileMs / tileCount;
-      let variance = 0;
-      for (let i = 0; i < tileCount; i++) {
-        const d = tileTimes[i] - meanTileMs;
-        variance += d * d;
-      }
-      variance /= tileCount;
-      console.log('[Render][Tiles] total time =', totalTileMs.toFixed(3), 'ms, tiles =', tileCount, ', mean =', meanTileMs.toFixed(3), 'ms, variance =', variance.toFixed(3), 'ms^2');
-    }
-  }
-  
-  // For non-ray-tracing path, end the render pass and submit
-  if (!useRayTracing) {
-    renderPass.end();
-    GPUApp.device.queue.submit([encoder.finish()]);
-    // Wait until GPU work for this frame is actually finished.
+    pass.setPipeline(GPUApp.accumFinalPipeline);
+    pass.setBindGroup(0, GPUApp.accumFinalBindGroup);
+    pass.draw(6);
+    pass.end();
+    GPUApp.device.queue.submit([enc.finish()]);
     await GPUApp.device.queue.onSubmittedWorkDone();
   }
 
   const end = performance.now();
   const frameMs = end - start;
-  const ms = frameMs.toFixed(3);
-  if (debugRenderEnabled && useRayTracing) {
-    console.log('[Render] Frame generated in', ms, 'ms using', scene.lightSources.length, 'lights');
+  if (debugRenderEnabled) {
+    console.log('[Render] Accumulation frame in', frameMs.toFixed(3), 'ms (', numPasses, 'passes)');
   }
   const label = document.getElementById('render_time_label');
-  if (label) {
-    label.textContent = `${ms} ms`;
-  }
+  if (label) label.textContent = `${frameMs.toFixed(3)} ms`;
   return frameMs;
 }
 
@@ -268,6 +501,7 @@ async function main() {
     console.log('[Main] shaders.wgsl HTTP status =', shaderResponse.status);
     const shaderCode = await shaderResponse.text();
     initRenderPipeline(GPUApp, shaderCode);
+    initAccumulationResources(GPUApp); // Create accum texture & pipelines
 
     const sceneSelect = document.getElementById('scene_select');
     const getSceneName = () => (sceneSelect && sceneSelect.value) || 'ram';
@@ -279,7 +513,7 @@ async function main() {
     async function renderLoop() {
       if (isRendering) return;
       const useRayTracing = document.getElementById('raytracingCheckbox').checked;
-      
+
       // Only continuously render when NOT using ray tracing
       if (!useRayTracing) {
         isRendering = true;
@@ -310,33 +544,11 @@ async function main() {
     // Initial render
     await renderScene(GPUApp, scene);
 
-    // Intensity slider: different range per mode. Raster = 0–3 (default 1); RT = 0–0.5 (default 0.3).
-    const intensitySlider = document.getElementById('intensity_slider');
-    const intensityValue = document.getElementById('intensity_value');
-    function syncIntensitySliderToMode() {
-      if (!intensitySlider || !intensityValue) return;
-      const useRT = document.getElementById('raytracingCheckbox').checked;
-      if (useRT) {
-        intensitySlider.min = '0';
-        intensitySlider.max = '0.5';
-        intensitySlider.step = '0.01';
-        intensitySlider.value = '0.3';
-      } else {
-        intensitySlider.min = '0';
-        intensitySlider.max = '3';
-        intensitySlider.step = '0.1';
-        intensitySlider.value = '1';
-      }
-      intensityValue.textContent = intensitySlider.value;
-    }
-
     // Start continuous rendering loop for non-raytracing mode
     const raytracingCheckbox = document.getElementById('raytracingCheckbox');
     if (raytracingCheckbox) {
-      syncIntensitySliderToMode();
       raytracingCheckbox.addEventListener('change', () => {
         const useRayTracing = raytracingCheckbox.checked;
-        syncIntensitySliderToMode();
         if (!useRayTracing && !animationFrameId) {
           // Start continuous rendering when ray tracing is turned off
           renderLoop();
@@ -346,7 +558,7 @@ async function main() {
           animationFrameId = null;
         }
       });
-      
+
       // Start loop if ray tracing is initially off
       if (!raytracingCheckbox.checked) {
         renderLoop();
@@ -365,23 +577,6 @@ async function main() {
       });
     }
 
-    // Intensity slider: update label and trigger render.
-    if (intensitySlider && intensityValue) {
-      intensitySlider.addEventListener('input', () => {
-        intensityValue.textContent = intensitySlider.value;
-        const useRT = document.getElementById('raytracingCheckbox').checked;
-        if (!useRT && !isRendering && !animationFrameId) renderLoop();
-      });
-      intensitySlider.addEventListener('change', () => {
-        intensityValue.textContent = intensitySlider.value;
-        const useRT = document.getElementById('raytracingCheckbox').checked;
-        if (useRT && !isRendering) {
-          isRendering = true;
-          renderScene(GPUApp, scene).then(() => { isRendering = false; });
-        }
-      });
-    }
-
     // Scene dropdown: reload scene and buffers when changed
     if (sceneSelect) {
       sceneSelect.addEventListener('change', async () => {
@@ -393,7 +588,6 @@ async function main() {
         try {
           scene = await createScene(camAspect, sceneName);
           initGPUBuffers(GPUApp, scene);
-          syncIntensitySliderToMode();
           await renderScene(GPUApp, scene);
           if (raytracingCheckbox && !raytracingCheckbox.checked) renderLoop();
         } catch (e) {
@@ -419,6 +613,314 @@ async function main() {
       });
     });
     const sidebarEl = document.getElementById('playground_sidebar');
+
+    // ─── Lightcut Tree tab ─────────────────────────────────────────────────
+    let lightcutTree = null;
+    let lightcutGPU = null; // Separate GPU context for lightcut canvas
+
+    async function initLightcutGPU() {
+      if (lightcutGPU) return lightcutGPU;
+      const lcCanvas = document.getElementById('lightcut_canvas');
+      if (!lcCanvas) return null;
+      // Share the same adapter & device with the main GPUApp
+      const lcContext = lcCanvas.getContext('webgpu');
+      const lcFormat = navigator.gpu.getPreferredCanvasFormat();
+      lcContext.configure({ device: GPUApp.device, format: lcFormat, alphaMode: 'opaque' });
+      lightcutGPU = {
+        canvas: lcCanvas,
+        device: GPUApp.device,
+        context: lcContext,
+        canvasFormat: lcFormat,
+        shaderModule: GPUApp.shaderModule,
+        bindGroupLayout: GPUApp.bindGroupLayout,
+        rasterizationPipeline: GPUApp.rasterizationPipeline,
+        depthTexture: GPUApp.device.createTexture({
+          size: [lcCanvas.width, lcCanvas.height],
+          format: 'depth24plus',
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        }),
+        uniformBuffer: null,
+        debugUniformBuffer: null,
+        uniformData: new Float32Array(96),
+        debugUniformData: new Uint32Array(8),
+        bindGroup: null,
+      };
+      return lightcutGPU;
+    }
+
+    /** Build a scene variant with solid bounding boxes for the lightcut viz. */
+    function buildLightcutScene(baseScene, nodes) {
+      // Clone the essential parts
+      const vizScene = {
+        camera: baseScene.camera,
+        meshes: [...baseScene.meshes.slice(0, baseScene.baseMeshCount || baseScene.meshes.length)],
+        materials: [...baseScene.materials],
+        lightSources: [], // will be replaced with fill lights below
+        baseMeshCount: baseScene.baseMeshCount || baseScene.meshes.length,
+      };
+
+      // Create fill lights from 6 directions so all box faces are visible.
+      // Use wide cones (angle=0) and moderate intensity.
+      const bounds = { minX: Infinity, minY: Infinity, minZ: Infinity, maxX: -Infinity, maxY: -Infinity, maxZ: -Infinity };
+      for (const m of vizScene.meshes) {
+        if (!m.positions) continue;
+        for (let i = 0; i < m.positions.length; i += 3) {
+          bounds.minX = Math.min(bounds.minX, m.positions[i]);
+          bounds.minY = Math.min(bounds.minY, m.positions[i + 1]);
+          bounds.minZ = Math.min(bounds.minZ, m.positions[i + 2]);
+          bounds.maxX = Math.max(bounds.maxX, m.positions[i]);
+          bounds.maxY = Math.max(bounds.maxY, m.positions[i + 1]);
+          bounds.maxZ = Math.max(bounds.maxZ, m.positions[i + 2]);
+        }
+      }
+      const cx = (bounds.minX + bounds.maxX) * 0.5;
+      const cy = (bounds.minY + bounds.maxY) * 0.5;
+      const cz = (bounds.minZ + bounds.maxZ) * 0.5;
+      const span = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ) * 1.5;
+      const center = [cx, cy, cz];
+      const fillLight = (pos) => ({
+        position: pos,
+        intensity: 0.3,
+        color: [1, 1, 1],
+        spot: center,
+        angle: 0.0, // wide cone — no angular cutoff
+        useRaytracedShadows: false,
+      });
+      vizScene.lightSources = [
+        fillLight([cx, cy + span, cz]),   // above
+        fillLight([cx, cy - span, cz]),   // below
+        fillLight([cx + span, cy, cz]),   // right
+        fillLight([cx - span, cy, cz]),   // left
+        fillLight([cx, cy, cz + span]),   // front
+        fillLight([cx, cy, cz - span]),   // back
+      ];
+
+      // Create per-node materials colored by intensity (red → green)
+      const baseMaterialIndex = vizScene.materials.length;
+      const nodeMaterials = createIntensityMaterials(nodes);
+      for (const mat of nodeMaterials) {
+        vizScene.materials.push(mat);
+      }
+
+      // Create and add solid box meshes (each node has its own material)
+      const boxMeshes = createBBoxMeshes(nodes, baseMaterialIndex);
+      for (const mesh of boxMeshes) {
+        vizScene.meshes.push(mesh);
+      }
+
+      return vizScene;
+    }
+
+    /** Render the lightcut visualization on the dedicated canvas. */
+    async function renderLightcutViz(depth) {
+      if (!lightcutTree) {
+        console.warn('[Lightcut] No tree built yet');
+        return;
+      }
+      const lcGPU = await initLightcutGPU();
+      if (!lcGPU) return;
+
+      const maxDepth = getTreeMaxDepth(lightcutTree);
+      const nodes = getNodesAtDepth(lightcutTree, depth);
+
+      // Update stats UI
+      const nodeCountEl = document.getElementById('lightcut_node_count');
+      if (nodeCountEl) nodeCountEl.textContent = nodes.length;
+
+      // Build the visualization scene
+      const vizScene = buildLightcutScene(scene, nodes);
+
+      // Init GPU buffers for the lightcut context
+      const { createMeshBuffers, createMaterialBuffer, createLightSourceBuffer, createGPUBuffer } = await import('./gpu.js');
+      lcGPU.meshBuffers = createMeshBuffers(lcGPU, vizScene.meshes);
+      lcGPU.materialBuffer = createMaterialBuffer(lcGPU, vizScene.materials);
+      lcGPU.lightSourceBuffer = createLightSourceBuffer(lcGPU, vizScene.lightSources);
+      lcGPU.uniformBuffer = createGPUBuffer(lcGPU.device, lcGPU.uniformData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+      lcGPU.debugUniformBuffer = createGPUBuffer(lcGPU.device, lcGPU.debugUniformData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+      lcGPU.bindGroup = lcGPU.device.createBindGroup({
+        layout: lcGPU.bindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: lcGPU.uniformBuffer } },
+          { binding: 1, resource: { buffer: lcGPU.meshBuffers.positionBuffer } },
+          { binding: 2, resource: { buffer: lcGPU.meshBuffers.normalBuffer } },
+          { binding: 3, resource: { buffer: lcGPU.meshBuffers.indexBuffer } },
+          { binding: 4, resource: { buffer: lcGPU.meshBuffers.meshBuffer } },
+          { binding: 5, resource: { buffer: lcGPU.materialBuffer } },
+          { binding: 6, resource: { buffer: lcGPU.lightSourceBuffer } },
+          { binding: 7, resource: { buffer: lcGPU.debugUniformBuffer } },
+        ],
+      });
+
+      // Update uniforms with the visualization scene
+      const { updateCamera } = await import('./camera.js');
+      const { mat4Invert, mat4Transpose } = await import('./math.js');
+      updateCamera(vizScene.camera);
+      lcGPU.uniformData.set(vizScene.camera.modelMat, 0);
+      lcGPU.uniformData.set(vizScene.camera.viewMat, 16);
+      const invViewMat = mat4Invert(vizScene.camera.viewMat);
+      lcGPU.uniformData.set(invViewMat, 32);
+      lcGPU.uniformData.set(mat4Transpose(invViewMat), 48);
+      lcGPU.uniformData.set(vizScene.camera.projMat, 64);
+      lcGPU.uniformData[80] = vizScene.camera.fov;
+      lcGPU.uniformData[81] = vizScene.camera.aspect;
+      lcGPU.uniformData[84] = vizScene.meshes.length; // render ALL meshes including boxes
+      lcGPU.uniformData[85] = vizScene.lightSources.length;
+      lcGPU.uniformData[86] = 0;
+      lcGPU.uniformData[87] = vizScene.lightSources.length;
+      lcGPU.uniformData[88] = lcGPU.canvas.width;
+      lcGPU.uniformData[89] = lcGPU.canvas.height;
+      lcGPU.device.queue.writeBuffer(lcGPU.uniformBuffer, 0, lcGPU.uniformData.buffer, lcGPU.uniformData.byteOffset, lcGPU.uniformData.byteLength);
+
+      // Debug uniform: mode 2 = raw albedo (unlit — just show material color)
+      lcGPU.debugUniformData[0] = 2;
+      lcGPU.device.queue.writeBuffer(lcGPU.debugUniformBuffer, 0, lcGPU.debugUniformData.buffer, lcGPU.debugUniformData.byteOffset, lcGPU.debugUniformData.byteLength);
+
+      // Fill light source staging
+      const { fillLightSourceStagingBuffer } = await import('./gpu.js');
+      // Use the shared light source buffer — already created above
+
+      // Render pass
+      const encoder = lcGPU.device.createCommandEncoder();
+      const renderPass = encoder.beginRenderPass({
+        label: 'Lightcut raster pass',
+        sampleCount: 1,
+        colorAttachments: [{
+          view: lcGPU.context.getCurrentTexture().createView(),
+          loadOp: 'clear',
+          clearValue: { r: 0.06, g: 0.06, b: 0.07, a: 1 },
+          storeOp: 'store',
+        }],
+        depthStencilAttachment: {
+          view: lcGPU.depthTexture.createView(),
+          depthClearValue: 1.0,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'store',
+        },
+      });
+      renderPass.setPipeline(lcGPU.rasterizationPipeline);
+      renderPass.setBindGroup(0, lcGPU.bindGroup);
+      for (let i = 0; i < vizScene.meshes.length; i++) {
+        renderPass.draw(vizScene.meshes[i].indices.length, 1, 0, i);
+      }
+      renderPass.end();
+      lcGPU.device.queue.submit([encoder.finish()]);
+      await lcGPU.device.queue.onSubmittedWorkDone();
+
+      console.log('[Lightcut] Rendered', nodes.length, 'bounding boxes at depth', depth);
+    }
+
+    // Build button
+    const lightcutBuildBtn = document.getElementById('lightcut_build_btn');
+    const lightcutMethodSelect = document.getElementById('lightcut_method_select');
+    const lightcutDepthSlider = document.getElementById('lightcut_depth_slider');
+    const lightcutDepthValue = document.getElementById('lightcut_depth_value');
+    const lightcutMaxDepthEl = document.getElementById('lightcut_max_depth');
+    const lightcutTotalLightsEl = document.getElementById('lightcut_total_lights');
+    const lightcutBuildTimeEl = document.getElementById('lightcut_build_time');
+
+    if (lightcutBuildBtn) {
+      lightcutBuildBtn.addEventListener('click', async () => {
+        if (!scene.lightSources || scene.lightSources.length === 0) {
+          console.warn('[Lightcut] No lights in scene');
+          return;
+        }
+        lightcutBuildBtn.disabled = true;
+        lightcutBuildBtn.textContent = 'Building…';
+
+        // Use setTimeout to let the UI update
+        await new Promise(r => setTimeout(r, 10));
+
+        const method = lightcutMethodSelect ? lightcutMethodSelect.value : 'bruteforce';
+        const buildStart = performance.now();
+
+        if (method === 'kdtree') {
+          lightcutTree = buildLightcutTreeKDTree(scene.lightSources);
+        } else {
+          lightcutTree = buildLightcutTreeBruteForce(scene.lightSources);
+        }
+
+        const buildTime = performance.now() - buildStart;
+        const maxDepth = getTreeMaxDepth(lightcutTree);
+
+        // Update UI
+        if (lightcutMaxDepthEl) lightcutMaxDepthEl.textContent = maxDepth;
+        if (lightcutTotalLightsEl) lightcutTotalLightsEl.textContent = scene.lightSources.length;
+        if (lightcutBuildTimeEl) lightcutBuildTimeEl.textContent = buildTime.toFixed(1) + ' ms';
+
+        // Configure depth slider
+        if (lightcutDepthSlider) {
+          lightcutDepthSlider.max = maxDepth;
+          lightcutDepthSlider.value = 0;
+          lightcutDepthSlider.disabled = false;
+        }
+        if (lightcutDepthValue) lightcutDepthValue.textContent = '0';
+
+        lightcutBuildBtn.disabled = false;
+        lightcutBuildBtn.textContent = 'Build Tree';
+
+        console.log(`[Lightcut] Built ${method} tree: maxDepth=${maxDepth}, lights=${scene.lightSources.length}, time=${buildTime.toFixed(1)}ms`);
+
+        // Render at depth 0
+        await renderLightcutViz(0);
+      });
+    }
+
+    // Depth slider
+    if (lightcutDepthSlider) {
+      lightcutDepthSlider.addEventListener('input', async () => {
+        const depth = parseInt(lightcutDepthSlider.value, 10);
+        if (lightcutDepthValue) lightcutDepthValue.textContent = depth;
+        await renderLightcutViz(depth);
+      });
+    }
+
+    // Camera controls for lightcut canvas
+    const lcCanvas = document.getElementById('lightcut_canvas');
+    if (lcCanvas) {
+      lcCanvas.addEventListener('mousedown', (e) => {
+        scene.camera.lastX = e.clientX;
+        scene.camera.lastY = e.clientY;
+        if (e.button === 0) scene.camera._lcDragging = true;
+        if (e.button === 1 || e.button === 2) scene.camera._lcPanning = true;
+      });
+      window.addEventListener('mouseup', () => {
+        scene.camera._lcDragging = false;
+        scene.camera._lcPanning = false;
+      });
+      lcCanvas.addEventListener('mousemove', async (e) => {
+        const dx = e.clientX - scene.camera.lastX;
+        const dy = e.clientY - scene.camera.lastY;
+        scene.camera.lastX = e.clientX;
+        scene.camera.lastY = e.clientY;
+        if (scene.camera._lcDragging) {
+          scene.camera.yaw -= dx * scene.camera.rotateSpeed;
+          scene.camera.pitch += dy * scene.camera.rotateSpeed;
+          const maxPitch = Math.PI / 2 - 0.01;
+          scene.camera.pitch = Math.max(-maxPitch, Math.min(maxPitch, scene.camera.pitch));
+          if (lightcutTree) {
+            const depth = parseInt(lightcutDepthSlider?.value || '0', 10);
+            await renderLightcutViz(depth);
+          }
+        }
+        if (scene.camera._lcPanning) {
+          pan(scene.camera, dx, -dy);
+          if (lightcutTree) {
+            const depth = parseInt(lightcutDepthSlider?.value || '0', 10);
+            await renderLightcutViz(depth);
+          }
+        }
+      });
+      lcCanvas.addEventListener('wheel', async (e) => {
+        e.preventDefault();
+        scene.camera.radius *= 1 + e.deltaY * scene.camera.zoomSpeed;
+        scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, scene.camera.radius));
+        if (lightcutTree) {
+          const depth = parseInt(lightcutDepthSlider?.value || '0', 10);
+          await renderLightcutViz(depth);
+        }
+      }, { passive: false });
+      lcCanvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
     if (sidebarEl) sidebarEl.style.display = 'flex';
 
     // Full-lights training: run N images (slider) with random north-hemisphere cameras; images appear one by one
@@ -453,7 +955,6 @@ async function main() {
 
         try {
           const { times } = await runFullLightsTraining(GPUApp, scene, numImages, {
-            syncIntensitySliderToMode,
             onImage(index, dataUrl) {
               const img = document.createElement('img');
               img.src = dataUrl;
