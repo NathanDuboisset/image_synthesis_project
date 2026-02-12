@@ -2,6 +2,11 @@ import { createScene, setCameraTopDown, setCameraRandomNorthHemisphere } from '.
 import { createGPUApp, initRenderPipeline, initGPUBuffers, updateUniforms, updateMaterialBuffer, updateLightSourceBuffer, updateDebugUniform } from './gpu.js';
 import { pan } from './camera.js';
 
+// Tile ratio controlling ray-tracing tile size vs. light count:
+// tileSize ≈ TILERATIO / numLights, clamped to [32, 256].
+// Example: with TILERATIO = 12800 → 100 lights → 128px tiles, 400 lights → 32px tiles.
+const TILERATIO = 64000;
+
 /** Get the current canvas content as a data URL (reusable for any canvas). */
 function getCanvasDataURL(canvas) {
   return canvas.toDataURL('image/png');
@@ -120,9 +125,12 @@ async function renderScene(GPUApp, scene) {
       }
     }
   } else {
-    // Ray tracing path: render to an offscreen texture (tiles accumulate), then copy to canvas once.
-    // This avoids swapchain reuse and ensures we see the full image. Tile size from scene camera.txt.
-    const tileSize = Math.max(32, Math.min(256, (scene.cameraConfig && typeof scene.cameraConfig.tileSize === 'number') ? scene.cameraConfig.tileSize : 256));
+    const numLights = Math.max(1, scene.lightSources?.length ?? 1);
+    const desiredTileSize = TILERATIO / numLights;
+    const baseTileSize = Number.isFinite(desiredTileSize) && desiredTileSize > 0
+      ? desiredTileSize
+      : ((scene.cameraConfig && typeof scene.cameraConfig.tileSize === 'number') ? scene.cameraConfig.tileSize : 256);
+    const tileSize = Math.max(32, Math.min(256, Math.round(baseTileSize)));
     const tilesX = Math.ceil(GPUApp.canvas.width / tileSize);
     const tilesY = Math.ceil(GPUApp.canvas.height / tileSize);
     tileCount = tilesX * tilesY;
@@ -189,6 +197,9 @@ async function renderScene(GPUApp, scene) {
         if (debugRenderEnabled) {
           const tileEnd = performance.now();
           tileTimes.push(tileEnd - tileStart);
+        }
+        if ((tx + ty * tilesX) % 10 === 0) { // Every 10 tiles, take a tiny break
+          await new Promise(resolve => setTimeout(resolve, 0));
         }
       }
     }

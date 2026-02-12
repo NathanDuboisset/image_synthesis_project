@@ -83,6 +83,28 @@ function parseOBJ(text) {
 }
 
 /**
+ * For certain scenes (currently 'ram') we want to compress
+ * light triangles into a single representative point per quad.
+ */
+function compressSceneLights(sceneName, lightPositions) {
+  if (sceneName === 'ram' && lightPositions.length > 0) {
+    const compressed = [];
+    for (let i = 0; i < lightPositions.length; i += 2) {
+      const p0 = lightPositions[i];
+      const p1 = lightPositions[i + 1] || p0;
+      compressed.push([
+        0.5 * (p0[0] + p1[0]),
+        0.5 * (p0[1] + p1[1]),
+        0.5 * (p0[2] + p1[2]),
+      ]);
+    }
+    console.log('[OBJ] Compressed RAM light triangles:', lightPositions.length, '->', compressed.length);
+    return compressed;
+  }
+  return lightPositions;
+}
+
+/**
  * Load a scene from an OBJ file located at:
  *   data/scenes/<sceneName>/<sceneName>.obj
  *
@@ -104,22 +126,8 @@ export async function loadOBJScene(sceneName, materialIndex = 0) {
   const text = await res.text();
   let { positions, indices, lightPositions } = parseOBJ(text);
 
-  // For the RAM scene, each ceiling light is a quad made of 2 triangles.
-  // Compress every pair of light triangle centers into a single light position.
-  if (sceneName === 'ram' && lightPositions.length > 0) {
-    const compressed = [];
-    for (let i = 0; i < lightPositions.length; i += 2) {
-      const p0 = lightPositions[i];
-      const p1 = lightPositions[i + 1] || p0;
-      compressed.push([
-        0.5 * (p0[0] + p1[0]),
-        0.5 * (p0[1] + p1[1]),
-        0.5 * (p0[2] + p1[2]),
-      ]);
-    }
-    console.log('[OBJ] Compressed RAM light triangles:', lightPositions.length, '->', compressed.length);
-    lightPositions = compressed;
-  }
+  // Compress lights for scenes that need it (e.g. RAM quads -> 1 light).
+  lightPositions = compressSceneLights(sceneName, lightPositions);
 
   if (!positions.length || !indices.length) {
     console.warn('[OBJ] Parsed empty geometry for scene', sceneName);
@@ -142,5 +150,36 @@ export async function loadOBJScene(sceneName, materialIndex = 0) {
 
   computeNormals(mesh);
   return { meshes: [mesh], lights: lightPositions };
+}
+
+/**
+ * Load lights from a separate OBJ file, typically:
+ *   data/scenes/<sceneName>/lights.obj
+ *
+ * The OBJ should contain geometry using `usemtl RamLight` for light quads.
+ * We parse only the light triangle centers and ignore geometry.
+ */
+export async function loadOBJLights(sceneName, lightObjName = 'lights') {
+  const url = `data/scenes/${sceneName}/${lightObjName}.obj`;
+  console.log('[OBJ] Loading separate lights from', url);
+
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    console.warn('[OBJ] Failed to fetch separate lights OBJ for scene', sceneName, err);
+    return [];
+  }
+
+  if (!res.ok) {
+    console.log('[OBJ] No separate lights OBJ found for scene', sceneName, '- HTTP', res.status);
+    return [];
+  }
+
+  const text = await res.text();
+  let { lightPositions } = parseOBJ(text);
+  lightPositions = compressSceneLights(sceneName, lightPositions);
+  console.log('[OBJ] Parsed separate lights for scene', sceneName, 'count =', lightPositions.length);
+  return lightPositions;
 }
 

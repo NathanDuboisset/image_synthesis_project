@@ -40,6 +40,8 @@ struct Scene {
   camera: Camera,
   numOfMeshes: f32,
   numOfLightSources: f32,
+  lightStartIndex: f32,
+  lightEndIndex: f32,
   screenWidth: f32,
   screenHeight: f32,
 };
@@ -187,8 +189,9 @@ fn lightShade(position: vec3f, normal: vec3f, materialIndex: u32, lightSourceInd
 
 fn computeRadiance(position: vec3f, normal: vec3f, materialIndex: u32, wo: vec3f) -> vec3f {
   var colorResponse = vec3f (0.0);
-  let numOfLights = u32(scene.numOfLightSources);
-  for (var lightSourceIndex = 0u; lightSourceIndex < numOfLights; lightSourceIndex++) {
+  let startIdx = u32(scene.lightStartIndex);
+  let endIdx = u32(scene.lightEndIndex);
+  for (var lightSourceIndex = startIdx; lightSourceIndex < endIdx; lightSourceIndex++) {
     colorResponse += lightShade(position, normal, materialIndex, lightSourceIndex, wo);
   }
   return colorResponse;
@@ -386,10 +389,11 @@ fn shadeRT(hit: Hit) -> vec4f {
   var outputColor = vec3f(0.0);
   var visibleCount = 0.0;
   
-  // CRASH FIX: Limit loop to 50 lights max for safety until Lightcuts is ready
-  let nLights = min(u32(scene.numOfLightSources), 100u); 
+  // Use light range from uniforms (supports accumulation passes)
+  let startIdx = u32(scene.lightStartIndex);
+  let endIdx = u32(scene.lightEndIndex);
 
-  for (var i = 0u; i < nLights; i++) {
+  for (var i = startIdx; i < endIdx; i++) {
     let l = lightSources[i];
     let L = l.position - worldPos;
     let dist = length(L);
@@ -499,4 +503,68 @@ fn blitVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput {
 @fragment
 fn blitFragmentMain(input: BlitVertexOutput) -> @location(0) vec4f {
   return textureSample(blitTex, blitSampler, input.uv);
+}
+
+// -----------------------------------------------------------------------
+// Accumulation blit shaders
+// -----------------------------------------------------------------------
+
+// Accumulation additive pass: reads from the new-pass texture and adds to the
+// accumulation texture. Uses alpha blending (ONE, ONE) on the GPU side, so
+// this shader simply outputs the source color.
+@group(0) @binding(0) var accumSrcTex: texture_2d<f32>;
+@group(0) @binding(1) var accumSrcSampler: sampler;
+
+@vertex
+fn accumBlitVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput {
+  var out: BlitVertexOutput;
+  let corners = array<vec2f, 4>(
+    vec2f(-1.0, 1.0), vec2f(1.0, 1.0), vec2f(-1.0, -1.0), vec2f(1.0, -1.0)
+  );
+  let uvs = array<vec2f, 4>(
+    vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(1.0, 1.0)
+  );
+  let idx = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
+  let i = idx[vi];
+  out.position = vec4f(corners[i], 0.0, 1.0);
+  out.uv = uvs[i];
+  return out;
+}
+
+@fragment
+fn accumBlitFragmentMain(input: BlitVertexOutput) -> @location(0) vec4f {
+  return textureSample(accumSrcTex, accumSrcSampler, input.uv);
+}
+
+// Final blit: divide accumulated color by pass count.
+// passCount is stored as a uniform.
+struct AccumFinalParams {
+  invPassCount: f32,
+  _pad: vec3<f32>,
+}
+
+@group(0) @binding(0) var finalAccumTex: texture_2d<f32>;
+@group(0) @binding(1) var finalAccumSampler: sampler;
+@group(0) @binding(2) var<uniform> accumFinalParams: AccumFinalParams;
+
+@vertex
+fn accumFinalVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput {
+  var out: BlitVertexOutput;
+  let corners = array<vec2f, 4>(
+    vec2f(-1.0, 1.0), vec2f(1.0, 1.0), vec2f(-1.0, -1.0), vec2f(1.0, -1.0)
+  );
+  let uvs = array<vec2f, 4>(
+    vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(1.0, 1.0)
+  );
+  let idx = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
+  let i = idx[vi];
+  out.position = vec4f(corners[i], 0.0, 1.0);
+  out.uv = uvs[i];
+  return out;
+}
+
+@fragment
+fn accumFinalFragmentMain(input: BlitVertexOutput) -> @location(0) vec4f {
+  let color = textureSample(finalAccumTex, finalAccumSampler, input.uv);
+  return vec4f(color.rgb * accumFinalParams.invPassCount, 1.0);
 }

@@ -1,6 +1,5 @@
 import { createCamera } from './camera.js';
-import { loadOBJScene } from './objLoader.js';
-import { createSphere } from './mesh.js';
+import { loadOBJScene, loadOBJLights } from './objLoader.js';
 
 // Scene names: 'ram' | 'sponza' | 'conference' (must match data/scenes/<name>)
 
@@ -279,12 +278,23 @@ function addDebugLightMeshes(scene) {
     metalness: 0.0,
   });
 
-  // Small sphere used as a template, then translated to each light position.
-  const radius = 0.02;
-  const sphere = createSphere(radius, 8, 8);
-  const basePositions = sphere.positions;
-  const baseNormals = sphere.normals;
-  const baseIndices = sphere.indices;
+  // Small marker geometry used as a template, then translated to each light position.
+  // Using just a couple of triangles instead of a sphere keeps the debug draw cheap
+  // even for thousands of lights, while still giving a clearly visible yellow marker.
+  const radius = 0.05;
+  const basePositions = new Float32Array([
+    -radius, 0.0, -radius,
+     radius, 0.0, -radius,
+     0.0,   0.0,  radius,
+  ]);
+  // Simple upward normal; these are only for visualization in raster mode.
+  const baseNormals = new Float32Array([
+    0.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+  ]);
+  // Double-sided triangle (two windings) so it is visible from above and below.
+  const baseIndices = new Uint32Array([0, 1, 2, 0, 2, 1]);
 
   scene.debugLightMeshStart = scene.meshes.length;
 
@@ -298,7 +308,9 @@ function addDebugLightMeshes(scene) {
       const py = basePositions[3 * i + 1];
       const pz = basePositions[3 * i + 2];
       positions[3 * i] = px + cx;
-      positions[3 * i + 1] = py + cy;
+      // Nudge the debug marker slightly below the light plane so it is clearly visible
+      // from below and does not z-fight with the ceiling panel.
+      positions[3 * i + 1] = py + cy - 0.03;
       positions[3 * i + 2] = pz + cz;
     }
 
@@ -387,13 +399,25 @@ export async function createScene(camAspect, sceneName = 'ram') {
   const materialIndex = Math.max(scene.materials.length - 1, 0);
   const objData = await loadOBJScene(sceneName, materialIndex);
   const meshes = objData.meshes || [];
-  const objLights = objData.lights || [];
+  let objLights = objData.lights || [];
   scene.meshes = meshes;
   scene.baseMeshCount = meshes.length;
 
   scene.lightSources = [];
 
   const bounds = computeMeshesBounds(scene.meshes);
+
+  // Prefer lights from a separate OBJ (data/scenes/<sceneName>/lights.obj) if present.
+  try {
+    const separateLights = await loadOBJLights(sceneName, 'lights');
+    if (separateLights && separateLights.length > 0) {
+      console.log('[Scene] Using lights from separate OBJ file for scene', sceneName);
+      objLights = separateLights;
+    }
+  } catch (err) {
+    console.warn('[Scene] Failed to load separate lights OBJ for scene', sceneName, err);
+  }
+
   if (sceneName === 'ram' && objLights.length > 0 && bounds) {
     const centerX = 0.5 * (bounds.minX + bounds.maxX);
     const centerZ = 0.5 * (bounds.minZ + bounds.maxZ);

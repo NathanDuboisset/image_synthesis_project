@@ -218,7 +218,7 @@ export async function createGPUApp() {
     rayTracingPipeline: {},
     depthTexture: {},
     offscreenColorTexture: null,
-    uniformData: new Float32Array(88),
+    uniformData: new Float32Array(96),
     debugUniformData: new Uint32Array(8),
   };
 }
@@ -236,9 +236,23 @@ export function updateUniforms(GPUApp, scene) {
   const meshCount = typeof scene.baseMeshCount === 'number' ? scene.baseMeshCount : scene.meshes.length;
   GPUApp.uniformData[84] = meshCount;
   GPUApp.uniformData[85] = scene.lightSources.length;
-  GPUApp.uniformData[86] = GPUApp.canvas.width;
-  GPUApp.uniformData[87] = GPUApp.canvas.height;
+  // Default: shade ALL lights (0..numLights). Accumulation overrides these per pass.
+  GPUApp.uniformData[86] = 0;                          // lightStartIndex
+  GPUApp.uniformData[87] = scene.lightSources.length;   // lightEndIndex
+  GPUApp.uniformData[88] = GPUApp.canvas.width;          // screenWidth
+  GPUApp.uniformData[89] = GPUApp.canvas.height;         // screenHeight
   GPUApp.device.queue.writeBuffer(GPUApp.uniformBuffer, 0, GPUApp.uniformData.buffer, GPUApp.uniformData.byteOffset, GPUApp.uniformData.byteLength);
+}
+
+/**
+ * Override the light range in the uniform buffer (for accumulation passes).
+ * Call after updateUniforms. Only writes the two changed floats.
+ */
+export function updateLightRange(GPUApp, startIndex, endIndex) {
+  GPUApp.uniformData[86] = startIndex;
+  GPUApp.uniformData[87] = endIndex;
+  // Write just the relevant portion (offset 86*4 = 344 bytes, 2 floats = 8 bytes)
+  GPUApp.device.queue.writeBuffer(GPUApp.uniformBuffer, 86 * 4, GPUApp.uniformData.buffer, GPUApp.uniformData.byteOffset + 86 * 4, 8);
 }
 
 export function updateDebugUniform(GPUApp) {

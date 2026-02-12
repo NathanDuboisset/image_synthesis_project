@@ -79,15 +79,11 @@ export function createLightPanel(
     throw new Error(`Scene OBJ file does not exist: ${objPath}`);
   }
 
-  // Count existing vertices in the main OBJ so we can offset face indices.
-  const objText = fs.readFileSync(objPath, 'utf8');
-  let baseVertexIndex = 0;
-  for (const line of objText.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('v ')) {
-      baseVertexIndex++;
-    }
-  }
+  // We used to offset face indices by the vertex count in the main OBJ so that
+  // this snippet could be pasted at the end of <sceneName>.obj. Now that we
+  // want to keep lights in a separate OBJ (e.g. lights.obj), we start indexing
+  // from 1 so the generated panel is self-contained.
+  const baseVertexIndex = 0;
 
   // Build a shared vertex grid (n+1) x (n+1) so we can emit n*n quads.
   // Each quad becomes 2 triangles.
@@ -113,9 +109,6 @@ export function createLightPanel(
 
   // Faces: emit 2 triangles per quad. We pick an order that makes the
   // normal point DOWN (negative Y), which is typical for ceiling panels.
-  // IMPORTANT: We offset indices by baseVertexIndex so that when you paste
-  // this snippet at the end of <sceneName>.obj, the faces refer to the new
-  // vertices (global indexing).
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {
       const v00 = baseVertexIndex + vIndex(i, j);
