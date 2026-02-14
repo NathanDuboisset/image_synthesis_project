@@ -1,46 +1,33 @@
-// lightcutTree.js — Lightcut tree construction (brute force & KD-tree approaches)
-//
-// A lightcut tree is a binary tree of lights. Each leaf is a single light;
-// internal nodes represent clusters of lights. Every node stores:
-//   - aabb: { min: [x,y,z], max: [x,y,z] } — the axis-aligned bounding box
-//   - representative: the "average" or representative light for this cluster
-//   - totalIntensity: summed intensity for the cluster
-//   - left, right: child nodes (null for leaves)
-//   - depth: depth in the tree (root = 0)
-//   - lightCount: number of leaves in this subtree
-//
-// Two build strategies:
-//   1) Brute-force: O(n²) greedy bottom-up — at each step merge the two closest nodes.
-//   2) KD-tree: top-down recursive split along the longest bounding-box axis.
+import type { Vec3, AABB, LightSource, LightcutNode, LightcutRepresentative } from './types.ts';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function vec3Min(a, b) {
+function vec3Min(a: Vec3, b: Vec3): Vec3 {
     return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2])];
 }
 
-function vec3Max(a, b) {
+function vec3Max(a: Vec3, b: Vec3): Vec3 {
     return [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])];
 }
 
-function vec3Dist2(a, b) {
+function vec3Dist2(a: Vec3, b: Vec3): number {
     const dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
     return dx * dx + dy * dy + dz * dz;
 }
 
-function aabbUnion(a, b) {
+function aabbUnion(a: AABB, b: AABB): AABB {
     return {
         min: vec3Min(a.min, b.min),
         max: vec3Max(a.max, b.max),
     };
 }
 
-function aabbFromPoint(p) {
+function aabbFromPoint(p: Vec3): AABB {
     return { min: [p[0], p[1], p[2]], max: [p[0], p[1], p[2]] };
 }
 
 /** Metric for pairing: distance between representative positions + bounding-box diagonal growth. */
-function mergeCost(nodeA, nodeB) {
+function mergeCost(nodeA: LightcutNode, nodeB: LightcutNode): number {
     const posDistSq = vec3Dist2(nodeA.representative.position, nodeB.representative.position);
     // Also penalise resulting bounding-box volume to discourage pairing far-apart lights
     const merged = aabbUnion(nodeA.aabb, nodeB.aabb);
@@ -53,7 +40,7 @@ function mergeCost(nodeA, nodeB) {
 
 // ─── Node creation ──────────────────────────────────────────────────────────
 
-function createLeafNode(light, index) {
+function createLeafNode(light: LightSource, index: number): LightcutNode {
     return {
         aabb: aabbFromPoint(light.position),
         representative: {
@@ -64,19 +51,19 @@ function createLeafNode(light, index) {
         totalIntensity: light.intensity,
         left: null,
         right: null,
-        depth: 0,       // will be set when tree structure is finalized
+        depth: 0,
         lightCount: 1,
-        lightIndex: index,     // original light array index (only for leaves)
+        lightIndex: index,
     };
 }
 
-function createInternalNode(left, right) {
+function createInternalNode(left: LightcutNode, right: LightcutNode): LightcutNode {
     const aabb = aabbUnion(left.aabb, right.aabb);
     const totalInt = left.totalIntensity + right.totalIntensity;
     // Intensity-weighted average position and color
     const wL = left.totalIntensity / (totalInt || 1);
     const wR = right.totalIntensity / (totalInt || 1);
-    const representative = {
+    const representative: LightcutRepresentative = {
         position: [
             left.representative.position[0] * wL + right.representative.position[0] * wR,
             left.representative.position[1] * wL + right.representative.position[1] * wR,
@@ -103,7 +90,7 @@ function createInternalNode(left, right) {
 
 // ─── Depth assignment ───────────────────────────────────────────────────────
 
-function assignDepths(node, depth) {
+function assignDepths(node: LightcutNode | null, depth: number): void {
     if (!node) return;
     node.depth = depth;
     assignDepths(node.left, depth + 1);
@@ -111,36 +98,32 @@ function assignDepths(node, depth) {
 }
 
 /** Returns the maximum depth in the tree. */
-function treeMaxDepth(node) {
+function treeMaxDepth(node: LightcutNode | null): number {
     if (!node) return -1;
     if (!node.left && !node.right) return node.depth;
     return Math.max(treeMaxDepth(node.left), treeMaxDepth(node.right));
 }
 
 // ─── 1) Brute-force pairing ────────────────────────────────────────────────
-//
-// Classic bottom-up agglomerative clustering. Start with N leaf nodes;
-// at each step, find the pair with the smallest mergeCost and merge them.
-// Repeat until a single root remains. Complexity: O(n²).
 
-export function buildLightcutTreeBruteForce(lightSources) {
+export function buildLightcutTreeBruteForce(lightSources: LightSource[]): LightcutNode | null {
     if (!lightSources || lightSources.length === 0) return null;
     if (lightSources.length === 1) {
-        const root = createLeafNode(lightSources[0], 0);
+        const root = createLeafNode(lightSources[0]!, 0);
         root.depth = 0;
         return root;
     }
 
     // Create leaf nodes
-    let nodes = lightSources.map((l, i) => createLeafNode(l, i));
+    const nodes: LightcutNode[] = lightSources.map((l, i) => createLeafNode(l, i));
 
     while (nodes.length > 1) {
         // Find the pair with the smallest merge cost
         let bestI = 0, bestJ = 1;
-        let bestCost = mergeCost(nodes[0], nodes[1]);
+        let bestCost = mergeCost(nodes[0]!, nodes[1]!);
         for (let i = 0; i < nodes.length; i++) {
             for (let j = i + 1; j < nodes.length; j++) {
-                const cost = mergeCost(nodes[i], nodes[j]);
+                const cost = mergeCost(nodes[i]!, nodes[j]!);
                 if (cost < bestCost) {
                     bestCost = cost;
                     bestI = i;
@@ -149,34 +132,40 @@ export function buildLightcutTreeBruteForce(lightSources) {
             }
         }
         // Merge the best pair
-        const merged = createInternalNode(nodes[bestI], nodes[bestJ]);
+        const merged = createInternalNode(nodes[bestI]!, nodes[bestJ]!);
         // Remove the two nodes (remove higher index first to keep lower valid)
         nodes.splice(bestJ, 1);
         nodes.splice(bestI, 1);
         nodes.push(merged);
     }
 
-    const root = nodes[0];
+    const root = nodes[0]!;
     assignDepths(root, 0);
     return root;
 }
 
-export function buildLightcutTreeKDTree(lightSources, method = 'spatial') {
+// ─── 2) KD-tree ─────────────────────────────────────────────────────────────
+
+interface LightItem {
+    light: LightSource;
+    index: number;
+}
+
+export function buildLightcutTreeKDTree(lightSources: LightSource[], method: 'spatial' | 'median' = 'spatial'): LightcutNode | null {
     if (!lightSources || lightSources.length === 0) return null;
 
-    // Build an array of { light, index } so we can track original indices
-    const items = lightSources.map((l, i) => ({ light: l, index: i }));
+    const items: LightItem[] = lightSources.map((l, i) => ({ light: l, index: i }));
     const useSpatial = method === 'spatial';
 
-    function buildRecursive(subset) {
+    function buildRecursive(subset: LightItem[]): LightcutNode | null {
         if (subset.length === 0) return null;
         if (subset.length === 1) {
-            return createLeafNode(subset[0].light, subset[0].index);
+            return createLeafNode(subset[0]!.light, subset[0]!.index);
         }
 
         // Compute bounding box
-        let minP = [Infinity, Infinity, Infinity];
-        let maxP = [-Infinity, -Infinity, -Infinity];
+        let minP: Vec3 = [Infinity, Infinity, Infinity];
+        let maxP: Vec3 = [-Infinity, -Infinity, -Infinity];
         for (const item of subset) {
             const p = item.light.position;
             minP = vec3Min(minP, p);
@@ -184,26 +173,27 @@ export function buildLightcutTreeKDTree(lightSources, method = 'spatial') {
         }
 
         // Find longest axis
-        const extents = [maxP[0] - minP[0], maxP[1] - minP[1], maxP[2] - minP[2]];
-        let axis = 0;
+        const extents: Vec3 = [maxP[0] - minP[0], maxP[1] - minP[1], maxP[2] - minP[2]];
+        let axis: 0 | 1 | 2 = 0;
         if (extents[1] > extents[axis]) axis = 1;
         if (extents[2] > extents[axis]) axis = 2;
 
-        let left, right;
+        let left: LightcutNode | null;
+        let right: LightcutNode | null;
         if (useSpatial) {
             // spatial partition : split midpoint
             const midpoint = (minP[axis] + maxP[axis]) / 2;
-            let leftslice = [];
-            let rightslice = [];
+            const leftSlice: LightItem[] = [];
+            const rightSlice: LightItem[] = [];
             for (const item of subset) {
                 if (item.light.position[axis] < midpoint) {
-                    leftslice.push(item);
+                    leftSlice.push(item);
                 } else {
-                    rightslice.push(item);
+                    rightSlice.push(item);
                 }
             }
-            left = buildRecursive(leftslice);
-            right = buildRecursive(rightslice);
+            left = buildRecursive(leftSlice);
+            right = buildRecursive(rightSlice);
         }
         else {
             // Sort along the chosen axis and split at the median
@@ -219,22 +209,20 @@ export function buildLightcutTreeKDTree(lightSources, method = 'spatial') {
     }
 
     const root = buildRecursive(items);
-    assignDepths(root, 0);
+    if (root) assignDepths(root, 0);
     return root;
 }
 
-export function getNodesAtDepth(root, targetDepth) {
-    const result = [];
+export function getNodesAtDepth(root: LightcutNode | null, targetDepth: number): LightcutNode[] {
+    const result: LightcutNode[] = [];
     if (!root) return result;
 
-    function walk(node) {
+    function walk(node: LightcutNode | null): void {
         if (!node) return;
         if (node.depth === targetDepth) {
             result.push(node);
-            return; // Don't go deeper — we show this node's bounding box
+            return;
         }
-        // If we haven't reached the target depth yet but this is a leaf,
-        // include it anyway (the tree may be unbalanced)
         if (!node.left && !node.right) {
             result.push(node);
             return;
@@ -248,17 +236,17 @@ export function getNodesAtDepth(root, targetDepth) {
 }
 
 /** Get tree max depth (0-indexed, so a single-node tree has depth 0). */
-export function getTreeMaxDepth(root) {
+export function getTreeMaxDepth(root: LightcutNode | null): number {
     return treeMaxDepth(root);
 }
 
 /** Flatten all nodes in the tree into an array (level-order). */
-export function flattenTree(root) {
+export function flattenTree(root: LightcutNode | null): LightcutNode[] {
     if (!root) return [];
-    const result = [];
-    const queue = [root];
+    const result: LightcutNode[] = [];
+    const queue: LightcutNode[] = [root];
     while (queue.length > 0) {
-        const node = queue.shift();
+        const node = queue.shift()!;
         result.push(node);
         if (node.left) queue.push(node.left);
         if (node.right) queue.push(node.right);

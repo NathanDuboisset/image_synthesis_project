@@ -1,8 +1,8 @@
+import type { AABB, Mesh, Material, LightcutNode } from './types.ts';
 
 const DEFAULT_MARGIN = 0.02;
 
-
-function createSolidBox(aabb, materialIndex, margin = DEFAULT_MARGIN) {
+function createSolidBox(aabb: AABB, materialIndex: number, margin: number = DEFAULT_MARGIN): Mesh {
     const x0 = aabb.min[0] - margin;
     const y0 = aabb.min[1] - margin;
     const z0 = aabb.min[2] - margin;
@@ -63,16 +63,15 @@ function createSolidBox(aabb, materialIndex, margin = DEFAULT_MARGIN) {
     };
 }
 
-export function createBBoxMeshes(nodes, baseMaterialIndex, margin = DEFAULT_MARGIN) {
-    const meshes = [];
+export function createBBoxMeshes(nodes: LightcutNode[], baseMaterialIndex: number, margin: number = DEFAULT_MARGIN): Mesh[] {
+    const meshes: Mesh[] = [];
     for (let i = 0; i < nodes.length; i++) {
-        meshes.push(createSolidBox(nodes[i].aabb, baseMaterialIndex + i, margin));
+        meshes.push(createSolidBox(nodes[i]!.aabb, baseMaterialIndex + i, margin));
     }
     return meshes;
 }
 
-
-export function createIntensityMaterials(nodes) {
+export function createIntensityMaterials(nodes: LightcutNode[]): Material[] {
     if (nodes.length === 0) return [];
 
     let minI = Infinity, maxI = -Infinity;
@@ -83,12 +82,12 @@ export function createIntensityMaterials(nodes) {
     }
     const range = maxI - minI;
 
-    const materials = [];
+    const materials: Material[] = [];
     for (const n of nodes) {
         const intensity = n.totalIntensity || 0;
         const t = range > 1e-8 ? (intensity - minI) / range : 0.5;
 
-        let r, g, b;
+        let r: number, g: number, b: number;
         if (t < 0.5) {
             const s = t * 2;
             r = 0.9;

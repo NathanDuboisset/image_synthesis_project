@@ -1,12 +1,26 @@
 {
   "name": "image_synthesis_project",
   "version": "1.0.0",
-  "main": "index.js",
+  "private": true,
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "devDependencies": {
+    "@webgpu/types": "^0.1.69",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vite-plugin-singlefile": "^2.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NathanDuboisset/image_synthesis_project.git"
+  },
+  "bugs": {
+    "url": "https://github.com/NathanDuboisset/image_synthesis_project/issues"
+  },
+  "homepage": "https://github.com/NathanDuboisset/image_synthesis_project#readme",
   "description": ""
 }

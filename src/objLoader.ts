@@ -1,4 +1,5 @@
-import { computeNormals } from './mesh.js';
+import type { Vec3, Mesh, ParsedOBJ, OBJSceneResult } from './types.ts';
+import { computeNormals } from './mesh.ts';
 
 /**
  * Minimal OBJ parser.
@@ -8,13 +9,13 @@ import { computeNormals } from './mesh.js';
  *   - usemtl <name> (used to detect light faces)
  * Ignores texture coordinates and normals.
  */
-function parseOBJ(text) {
-  const positions = [];
-  const indices = [];
-  const lightPositions = [];
+function parseOBJ(text: string): ParsedOBJ {
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const lightPositions: Vec3[] = [];
 
   // Store positions 1-based to make OBJ indexing (1-based, with possible negatives) easier.
-  const tempPositions = [null];
+  const tempPositions: (Vec3 | null)[] = [null];
 
   let currentMaterial = '';
 
@@ -36,11 +37,11 @@ function parseOBJ(text) {
       currentMaterial = parts[1] || '';
     } else if (keyword === 'f') {
       if (parts.length < 4) continue;
-      const faceIndices = [];
+      const faceIndices: number[] = [];
       for (let i = 1; i < parts.length; i++) {
         const token = parts[i];
         if (!token) continue;
-        const vStr = token.split('/')[0]; // handle v, v/vt, v//vn, v/vt/vn
+        const vStr = token.split('/')[0]!; // handle v, v/vt, v//vn, v/vt/vn
         let idx = parseInt(vStr, 10);
         if (Number.isNaN(idx)) continue;
         if (idx < 0) idx = tempPositions.length + idx; // negative indices are relative to the end
@@ -49,9 +50,9 @@ function parseOBJ(text) {
       if (faceIndices.length < 3) continue;
       // Triangulate polygon into a fan
       for (let i = 1; i < faceIndices.length - 1; i++) {
-        const i0 = faceIndices[0];
-        const i1 = faceIndices[i];
-        const i2 = faceIndices[i + 1];
+        const i0 = faceIndices[0]!;
+        const i1 = faceIndices[i]!;
+        const i2 = faceIndices[i + 1]!;
         indices.push(
           i0 - 1,
           i1 - 1,
@@ -75,7 +76,7 @@ function parseOBJ(text) {
 
   // Flatten positions
   for (let i = 1; i < tempPositions.length; i++) {
-    const p = tempPositions[i];
+    const p = tempPositions[i]!;
     positions.push(p[0], p[1], p[2]);
   }
 
@@ -86,12 +87,12 @@ function parseOBJ(text) {
  * For certain scenes (currently 'ram') we want to compress
  * light triangles into a single representative point per quad.
  */
-function compressSceneLights(sceneName, lightPositions) {
+function compressSceneLights(sceneName: string, lightPositions: Vec3[]): Vec3[] {
   if (sceneName === 'ram' && lightPositions.length > 0) {
-    const compressed = [];
+    const compressed: Vec3[] = [];
     for (let i = 0; i < lightPositions.length; i += 2) {
-      const p0 = lightPositions[i];
-      const p1 = lightPositions[i + 1] || p0;
+      const p0 = lightPositions[i]!;
+      const p1 = lightPositions[i + 1] ?? p0;
       compressed.push([
         0.5 * (p0[0] + p1[0]),
         0.5 * (p0[1] + p1[1]),
@@ -108,13 +109,9 @@ function compressSceneLights(sceneName, lightPositions) {
  * Load a scene from an OBJ file located at:
  *   data/scenes/<sceneName>/<sceneName>.obj
  *
- * Returns:
- *   {
- *     meshes: [ ... ],
- *     lights: [ [x,y,z], ... ]   // one entry per light triangle center
- *   }
+ * Returns meshes and light positions.
  */
-export async function loadOBJScene(sceneName, materialIndex = 0) {
+export async function loadOBJScene(sceneName: string, materialIndex: number = 0): Promise<OBJSceneResult> {
   const url = `data/scenes/${sceneName}/${sceneName}.obj`;
   console.log('[OBJ] Loading scene from', url);
 
@@ -141,7 +138,7 @@ export async function loadOBJScene(sceneName, materialIndex = 0) {
     );
   }
 
-  const mesh = {
+  const mesh: Mesh = {
     positions: new Float32Array(positions),
     normals: new Float32Array(positions.length),
     indices: new Uint32Array(indices),
@@ -159,11 +156,11 @@ export async function loadOBJScene(sceneName, materialIndex = 0) {
  * The OBJ should contain geometry using `usemtl RamLight` for light quads.
  * We parse only the light triangle centers and ignore geometry.
  */
-export async function loadOBJLights(sceneName, lightObjName = 'lights') {
+export async function loadOBJLights(sceneName: string, lightObjName: string = 'lights'): Promise<Vec3[]> {
   const url = `data/scenes/${sceneName}/${lightObjName}.obj`;
   console.log('[OBJ] Loading separate lights from', url);
 
-  let res;
+  let res: Response;
   try {
     res = await fetch(url);
   } catch (err) {
@@ -182,4 +179,3 @@ export async function loadOBJLights(sceneName, lightObjName = 'lights') {
   console.log('[OBJ] Parsed separate lights for scene', sceneName, 'count =', lightPositions.length);
   return lightPositions;
 }
-

@@ -1,9 +1,10 @@
-import { createCamera } from './camera.js';
-import { loadOBJScene, loadOBJLights } from './objLoader.js';
+import type { Vec3, Scene, Material, Mesh, LightSource, CameraConfig, SceneBounds, NamedMaterial } from './types.ts';
+import { createCamera } from './camera.ts';
+import { loadOBJScene, loadOBJLights } from './objLoader.ts';
 
 // Scene names: 'ram' | 'sponza' | 'conference' (must match data/scenes/<name>)
 
-async function loadMaterialsFromMTL(sceneName) {
+async function loadMaterialsFromMTL(sceneName: string): Promise<Material[]> {
   const url = `data/scenes/${sceneName}/${sceneName}.mtl`;
   console.log('[Scene] Loading materials from', url);
   try {
@@ -12,10 +13,10 @@ async function loadMaterialsFromMTL(sceneName) {
     const text = await res.text();
     const lines = text.split(/\r?\n/);
 
-    const materialsWithNames = [];
-    let current = null;
+    const materialsWithNames: NamedMaterial[] = [];
+    let current: NamedMaterial | null = null;
 
-    for (let raw of lines) {
+    for (const raw of lines) {
       const line = raw.trim();
       if (!line || line.startsWith('#')) continue;
       const parts = line.split(/\s+/);
@@ -52,7 +53,7 @@ async function loadMaterialsFromMTL(sceneName) {
       });
     }
 
-    const materials = materialsWithNames.map(m => ({
+    const materials: Material[] = materialsWithNames.map(m => ({
       albedo: m.albedo,
       roughness: m.roughness,
       metalness: m.metalness,
@@ -69,9 +70,7 @@ async function loadMaterialsFromMTL(sceneName) {
   }
 }
 
-// Note: at runtime we now rely only on OBJ + MTL files.
-
-function computeMeshesBounds(meshes) {
+function computeMeshesBounds(meshes: Mesh[]): SceneBounds | null {
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   let hasPositions = false;
@@ -81,7 +80,7 @@ function computeMeshesBounds(meshes) {
     hasPositions = true;
     const p = mesh.positions;
     for (let i = 0; i < p.length; i += 3) {
-      const x = p[i], y = p[i + 1], z = p[i + 2];
+      const x = p[i]!, y = p[i + 1]!, z = p[i + 2]!;
       if (x < minX) minX = x;
       if (y < minY) minY = y;
       if (z < minZ) minZ = z;
@@ -95,9 +94,8 @@ function computeMeshesBounds(meshes) {
   return { minX, minY, minZ, maxX, maxY, maxZ };
 }
 
-function fitCameraToScene(scene) {
+function fitCameraToScene(scene: Scene): void {
   if (!scene.meshes || scene.meshes.length === 0) {
-    // Fallback to a reasonable default around the origin.
     const s = 0.5;
     scene.camera.target = [0.0, s, 0.0];
     scene.camera.radius = 4.0 * s;
@@ -107,7 +105,7 @@ function fitCameraToScene(scene) {
   const bounds = computeMeshesBounds(scene.meshes);
   if (!bounds) return;
 
-  const center = [
+  const center: Vec3 = [
     0.5 * (bounds.minX + bounds.maxX),
     0.5 * (bounds.minY + bounds.maxY),
     0.5 * (bounds.minZ + bounds.maxZ),
@@ -118,9 +116,9 @@ function fitCameraToScene(scene) {
     if (!mesh.positions || mesh.positions.length < 3) continue;
     const p = mesh.positions;
     for (let i = 0; i < p.length; i += 3) {
-      const dx = p[i] - center[0];
-      const dy = p[i + 1] - center[1];
-      const dz = p[i + 2] - center[2];
+      const dx = p[i]! - center[0];
+      const dy = p[i + 1]! - center[1];
+      const dz = p[i + 2]! - center[2];
       const d2 = dx * dx + dy * dy + dz * dz;
       if (d2 > radiusSq) radiusSq = d2;
     }
@@ -138,18 +136,13 @@ function fitCameraToScene(scene) {
   scene.camera.far = Math.max(radius * 10.0, scene.camera.near * 10.0);
 }
 
-/**
- * Load camera config from data/scenes/<sceneName>/camera.txt.
- * Format: one key=value per line; # is comment. Keys: radiusScale, radius, yaw, pitch, targetX, targetY, targetZ.
- * Returns null if file missing or empty.
- */
-async function loadCameraConfig(sceneName) {
+async function loadCameraConfig(sceneName: string): Promise<CameraConfig | null> {
   const url = `data/scenes/${sceneName}/camera.txt`;
   try {
     const res = await fetch(url);
     if (!res.ok) return null;
     const text = await res.text();
-    const config = {};
+    const config: CameraConfig = {};
     for (const line of text.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) continue;
@@ -167,11 +160,7 @@ async function loadCameraConfig(sceneName) {
   }
 }
 
-/**
- * Apply loaded camera config to scene.camera (after fitCameraToScene).
- * Supported keys: radiusScale (multiply radius), radius (override), yaw, pitch (radians), targetX, targetY, targetZ.
- */
-function applyCameraConfig(scene, config) {
+function applyCameraConfig(scene: Scene, config: CameraConfig): void {
   if (config.radiusScale != null) {
     scene.camera.radius *= config.radiusScale;
     scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, scene.camera.radius));
@@ -186,11 +175,7 @@ function applyCameraConfig(scene, config) {
   if (config.targetZ != null) scene.camera.target[2] = config.targetZ;
 }
 
-/**
- * Apply scene.cameraConfig radius scale to current camera.radius (used after setting
- * radius in setCameraTopDown / setCameraRandomNorthHemisphere so config is used everywhere).
- */
-function applyCameraConfigRadius(scene) {
+function applyCameraConfigRadius(scene: Scene): void {
   const config = scene.cameraConfig;
   if (!config) return;
   if (config.radiusScale != null) {
@@ -202,7 +187,7 @@ function applyCameraConfigRadius(scene) {
   }
 }
 
-function debugLightsAtPoint(label, scene, point) {
+function debugLightsAtPoint(label: string, scene: Scene, point: Vec3): void {
   const lights = scene.lightSources || [];
   if (!lights.length) {
     console.log('[Scene][DebugLights]', label, 'no lights');
@@ -218,12 +203,12 @@ function debugLightsAtPoint(label, scene, point) {
     const distSq = dx * dx + dy * dy + dz * dz;
     const dist = Math.sqrt(distSq);
     if (dist <= 0.0) continue;
-    const wi = [-dx / dist, -dy / dist, -dz / dist];
+    const wi: Vec3 = [-dx / dist, -dy / dist, -dz / dist];
     const lx = l.spot[0] - l.position[0];
     const ly = l.spot[1] - l.position[1];
     const lz = l.spot[2] - l.position[2];
     const lenL = Math.sqrt(lx * lx + ly * ly + lz * lz) || 1.0;
-    const lightDir = [lx / lenL, ly / lenL, lz / lenL];
+    const lightDir: Vec3 = [lx / lenL, ly / lenL, lz / lenL];
     const dotVal = -(wi[0] * lightDir[0] + wi[1] * lightDir[1] + wi[2] * lightDir[2]);
     const spotConeDecay = dotVal - l.angle;
     if (spotConeDecay <= 0.0) continue;
@@ -241,16 +226,15 @@ function debugLightsAtPoint(label, scene, point) {
   });
 }
 
-function debugLights(scene) {
-  // Debug lights always enabled (no checkbox anymore).
+function debugLights(scene: Scene): void {
   const bounds = computeMeshesBounds(scene.meshes);
   if (!bounds) return;
-  const center = [
+  const center: Vec3 = [
     0.5 * (bounds.minX + bounds.maxX),
     0.5 * (bounds.minY + bounds.maxY),
     0.5 * (bounds.minZ + bounds.maxZ),
   ];
-  const ground = [
+  const ground: Vec3 = [
     center[0],
     bounds.minY + 0.01,
     center[2],
@@ -259,17 +243,14 @@ function debugLights(scene) {
   debugLightsAtPoint('ground', scene, ground);
 }
 
-function addDebugLightMeshes(scene) {
+function addDebugLightMeshes(scene: Scene): void {
   const lights = scene.lightSources || [];
   if (!lights.length || typeof document === 'undefined') return;
 
-  // Remember how many "real" meshes we have so we can keep ray tracing
-  // operating only on the main geometry.
   if (typeof scene.baseMeshCount !== 'number') {
     scene.baseMeshCount = scene.meshes.length;
   }
 
-  // Add a bright material for light markers.
   const debugMaterialIndex = scene.materials.length;
   scene.materials.push({
     albedo: [1.0, 0.9, 0.2],
@@ -277,22 +258,17 @@ function addDebugLightMeshes(scene) {
     metalness: 0.0,
   });
 
-  // Small marker geometry used as a template, then translated to each light position.
-  // Using just a couple of triangles instead of a sphere keeps the debug draw cheap
-  // even for thousands of lights, while still giving a clearly visible yellow marker.
   const radius = 0.05;
   const basePositions = new Float32Array([
     -radius, 0.0, -radius,
     radius, 0.0, -radius,
     0.0, 0.0, radius,
   ]);
-  // Simple upward normal; these are only for visualization in raster mode.
   const baseNormals = new Float32Array([
     0.0, 1.0, 0.0,
     0.0, 1.0, 0.0,
     0.0, 1.0, 0.0,
   ]);
-  // Double-sided triangle (two windings) so it is visible from above and below.
   const baseIndices = new Uint32Array([0, 1, 2, 0, 2, 1]);
 
   scene.debugLightMeshStart = scene.meshes.length;
@@ -303,12 +279,10 @@ function addDebugLightMeshes(scene) {
 
     const positions = new Float32Array(basePositions.length);
     for (let i = 0; i < vertCount; i++) {
-      const px = basePositions[3 * i];
-      const py = basePositions[3 * i + 1];
-      const pz = basePositions[3 * i + 2];
+      const px = basePositions[3 * i]!;
+      const py = basePositions[3 * i + 1]!;
+      const pz = basePositions[3 * i + 2]!;
       positions[3 * i] = px + cx;
-      // Nudge the debug marker slightly below the light plane so it is clearly visible
-      // from below and does not z-fight with the ceiling panel.
       positions[3 * i + 1] = py + cy - 0.03;
       positions[3 * i + 2] = pz + cz;
     }
@@ -327,17 +301,13 @@ function addDebugLightMeshes(scene) {
     });
   }
 
-  console.log('[Scene] Added debug light meshes:', scene.meshes.length - scene.baseMeshCount);
+  console.log('[Scene] Added debug light meshes:', scene.meshes.length - (scene.baseMeshCount ?? 0));
 }
 
-/**
- * Get scene bounds center and a suitable orbit radius (from mesh extents).
- * Used by setCameraTopDown and setCameraRandomNorthHemisphere.
- */
-function getSceneCenterAndRadius(meshes) {
+function getSceneCenterAndRadius(meshes: Mesh[]): { center: Vec3; radius: number } | null {
   const bounds = computeMeshesBounds(meshes);
   if (!bounds) return null;
-  const center = [
+  const center: Vec3 = [
     0.5 * (bounds.minX + bounds.maxX),
     0.5 * (bounds.minY + bounds.maxY),
     0.5 * (bounds.minZ + bounds.maxZ),
@@ -347,7 +317,7 @@ function getSceneCenterAndRadius(meshes) {
     if (!mesh.positions || mesh.positions.length < 3) continue;
     const p = mesh.positions;
     for (let i = 0; i < p.length; i += 3) {
-      const dx = p[i] - center[0], dy = p[i + 1] - center[1], dz = p[i + 2] - center[2];
+      const dx = p[i]! - center[0], dy = p[i + 1]! - center[1], dz = p[i + 2]! - center[2];
       const d2 = dx * dx + dy * dy + dz * dz;
       if (d2 > radiusSq) radiusSq = d2;
     }
@@ -356,11 +326,7 @@ function getSceneCenterAndRadius(meshes) {
   return { center, radius };
 }
 
-/**
- * Set camera to a top-down view (from above) with optional yaw (azimuth) in radians.
- * Respects scene.cameraConfig (radiusScale/radius) if present.
- */
-export function setCameraTopDown(scene, yawRad = 0) {
+export function setCameraTopDown(scene: Scene, yawRad: number = 0): void {
   const data = getSceneCenterAndRadius(scene.meshes);
   if (!data) return;
   const { center, radius } = data;
@@ -371,11 +337,7 @@ export function setCameraTopDown(scene, yawRad = 0) {
   applyCameraConfigRadius(scene);
 }
 
-/**
- * Set camera to a random position on the north hemisphere (Y up) looking at scene center.
- * Respects scene.cameraConfig (radiusScale/radius) if present (e.g. full-lights tab).
- */
-export function setCameraRandomNorthHemisphere(scene) {
+export function setCameraRandomNorthHemisphere(scene: Scene): void {
   const data = getSceneCenterAndRadius(scene.meshes);
   if (!data) return;
   const { center, radius } = data;
@@ -386,10 +348,14 @@ export function setCameraRandomNorthHemisphere(scene) {
   applyCameraConfigRadius(scene);
 }
 
-export async function createScene(camAspect, sceneName = 'ram') {
+export async function createScene(camAspect: number, sceneName: string = 'ram'): Promise<Scene> {
   console.log('[Scene] createScene start, aspect =', camAspect, 'sceneName =', sceneName);
-  const scene = {};
-  scene.camera = createCamera(camAspect);
+  const scene: Scene = {
+    camera: createCamera(camAspect),
+    meshes: [],
+    materials: [],
+    lightSources: [],
+  };
 
   // Load materials directly from the scene's MTL file.
   scene.materials = await loadMaterialsFromMTL(sceneName);
@@ -421,7 +387,7 @@ export async function createScene(camAspect, sceneName = 'ram') {
     const centerX = 0.5 * (bounds.minX + bounds.maxX);
     const centerZ = 0.5 * (bounds.minZ + bounds.maxZ);
     const targetY = 0.5 * (bounds.minY + bounds.maxY);
-    const color = [1.0, 0.95, 0.9];
+    const color: Vec3 = [1.0, 0.95, 0.9];
     const angle = 0.5;
     const baseIntensity = 0.05;
     let added = 0;
@@ -438,8 +404,7 @@ export async function createScene(camAspect, sceneName = 'ram') {
     }
     console.log('[Scene] Added RAM OBJ lights from RamLight faces:', added, 'total lights =', scene.lightSources.length);
   } else if (bounds) {
-    // Fallback single light above the scene center.
-    const center = [
+    const center: Vec3 = [
       0.5 * (bounds.minX + bounds.maxX),
       0.5 * (bounds.minY + bounds.maxY),
       0.5 * (bounds.minZ + bounds.maxZ),
@@ -465,8 +430,6 @@ export async function createScene(camAspect, sceneName = 'ram') {
     scene.cameraConfig = null;
   }
 
-  // Build small debug meshes at each light position so they can be
-  // toggled on in raster mode.
   addDebugLightMeshes(scene);
   scene.time = 0;
   debugLights(scene);

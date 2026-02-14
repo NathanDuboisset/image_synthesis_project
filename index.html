@@ -20,9 +20,10 @@
       <nav class="tabs" role="tablist">
         <button type="button" class="tab active" data-tab="playground" role="tab"
           aria-selected="true">Playground</button>
-        <button type="button" class="tab" data-tab="full-lights" role="tab" aria-selected="false">Full-lights</button>
-        <button type="button" class="tab" data-tab="stochastic" role="tab" aria-selected="false">Stochastic</button>
-        <button type="button" class="tab" data-tab="lightcut" role="tab" aria-selected="false">Lightcut Tree</button>
+        <button type="button" class="tab" data-tab="testing" role="tab" aria-selected="false">Multi-image
+        </button>
+        <button type="button" class="tab" data-tab="lightcut" role="tab" aria-selected="false">Lightcut tree
+          testing</button>
       </nav>
     </div>
   </header>
@@ -30,24 +31,25 @@
   <main class="app-main">
     <aside class="sidebar" id="playground_sidebar">
       <div class="sidebar-section">
-        <label for="rendering_type_select">Rendering type:</label>
+        <label for="render_method_select">Method:</label>
+        <select id="render_method_select">
+          <option value="accumulation">Accumulation</option>
+          <option value="tiles" selected>Tiles</option>
+          <option value="oneshot">One Shot</option>
+        </select>
+      </div>
+      <div class="sidebar-section">
+        <label for="rendering_type_select">Rendering:</label>
         <select id="rendering_type_select">
-          <option value="raster" selected>Raster (testing)</option>
-          <option value="raytrace">Raytrace Normal</option>
+          <option value="raster" selected>Raster</option>
+          <option value="raytrace">Raytrace</option>
           <option value="lightcuts">Lightcuts</option>
+          <option value="stochastic_lightcuts">Stochastic Lightcuts</option>
         </select>
       </div>
       <div class="sidebar-section">
         <button type="button" id="render_button">Generate image</button>
         <span id="render_time_label"></span>
-      </div>
-      <div class="sidebar-section">
-        <label for="render_method_select">Render method:</label>
-        <select id="render_method_select">
-          <option value="tiles" selected>Tiles (Default)</option>
-          <option value="oneshot">One Shot</option>
-          <option value="accumulation">Accumulation</option>
-        </select>
       </div>
     </aside>
 
@@ -57,17 +59,11 @@
       </div>
     </section>
 
-    <section class="tab-panel training-panel" id="panel-full-lights" role="tabpanel" hidden>
+    <section class="tab-panel training-panel" id="panel-testing" role="tabpanel" hidden>
       <div class="training-content">
-        <p>Generate images with full lights, one by one; camera is random on the north hemisphere. Images appear as they
+        <p>Generate batch images with random camera positions on the north hemisphere. Images appear as they
           are generated.</p>
         <div class="training-controls">
-          <label for="render_method_select_training">Method:</label>
-          <select id="render_method_select_training" style="margin-right: 1rem;">
-            <option value="tiles" selected>Tiles</option>
-            <option value="oneshot">One Shot</option>
-            <option value="accumulation">Accumulation</option>
-          </select>
           <label for="full_lights_num_images">Number of images:</label>
           <input type="range" id="full_lights_num_images" min="1" max="32" value="10">
           <span id="full_lights_num_images_value">10</span>
@@ -78,18 +74,6 @@
           <p>Last run: <span id="full_lights_last_run">—</span></p>
         </div>
         <div class="training-grid" id="full_lights_grid"></div>
-      </div>
-    </section>
-
-    <section class="tab-panel training-panel" id="panel-stochastic" role="tabpanel" hidden>
-      <div class="training-content">
-        <p>Stochastic method benchmarks (to be implemented). Same structure as Full-lights: run N images, report average
-          time.</p>
-        <button type="button" id="stochastic_run_btn" disabled>Run 10 images (coming next)</button>
-        <div class="training-stats" id="stochastic_stats">
-          <p>Average render time: <span id="stochastic_avg_ms">—</span> ms</p>
-          <p>Last run: <span id="stochastic_last_run">—</span></p>
-        </div>
       </div>
     </section>
 
@@ -124,7 +108,7 @@
   </main>
 
   <div class="description-container"></div>
-  <script type="module" src="js/main.js"></script>
+  <script type="module" src="src/main.ts"></script>
 </body>
 
 </html>
