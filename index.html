@@ -30,8 +30,12 @@
   <main class="app-main">
     <aside class="sidebar" id="playground_sidebar">
       <div class="sidebar-section">
-        <input type="checkbox" id="raytracingCheckbox">
-        <label for="raytracingCheckbox">Ray tracing + shadows</label>
+        <label for="rendering_type_select">Rendering type:</label>
+        <select id="rendering_type_select">
+          <option value="raster" selected>Raster (testing)</option>
+          <option value="raytrace">Raytrace Normal</option>
+          <option value="lightcuts">Lightcuts</option>
+        </select>
       </div>
       <div class="sidebar-section">
         <button type="button" id="render_button">Generate image</button>
@@ -43,23 +47,6 @@
           <option value="tiles" selected>Tiles (Default)</option>
           <option value="oneshot">One Shot</option>
           <option value="accumulation">Accumulation</option>
-        </select>
-      </div>
-      <div class="sidebar-section">
-        <input type="checkbox" id="debug_render_checkbox" checked>
-        <label for="debug_render_checkbox">Debug render</label>
-      </div>
-      <div class="sidebar-section">
-        <input type="checkbox" id="debug_lights_checkbox" checked>
-        <label for="debug_lights_checkbox">Debug lights</label>
-      </div>
-      <div class="sidebar-section">
-        <label for="debug_mode_select">RT debug mode:</label>
-        <select id="debug_mode_select">
-          <option value="0" selected>0 - Normal PBR</option>
-          <option value="1">1 - Visible light count</option>
-          <option value="2">2 - Raw albedo</option>
-          <option value="3">3 - World normals</option>
         </select>
       </div>
     </aside>
@@ -112,8 +99,8 @@
         <div class="lightcut-control-group">
           <label for="lightcut_method_select">Build method:</label>
           <select id="lightcut_method_select">
-            <option value="bruteforce" selected>Brute Force</option>
-            <option value="kdtree">KD-Tree</option>
+            <option value="kdtree-spatial" selected>KD-Tree Spatial</option>
+            <option value="kdtree-median">KD-Tree Median</option>
           </select>
         </div>
         <div class="lightcut-control-group">

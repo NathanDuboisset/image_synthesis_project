@@ -23,6 +23,18 @@ function getSelectedRenderMethod() {
   return sel ? sel.value : 'tiles'; // fallback to tiles
 }
 
+/** Get the current rendering type from the dropdown. */
+function getRenderingType() {
+  const sel = document.getElementById('rendering_type_select');
+  return sel ? sel.value : 'raytrace';
+}
+
+/** Whether ray tracing is enabled (raytrace or lightcuts mode). */
+function isRayTracingEnabled() {
+  const t = getRenderingType();
+  return t === 'raytrace' || t === 'lightcuts';
+}
+
 /** Get the current canvas content as a data URL (reusable for any canvas). */
 function getCanvasDataURL(canvas) {
   return canvas.toDataURL('image/png');
@@ -36,9 +48,11 @@ function getCanvasDataURL(canvas) {
 async function runFullLightsTraining(GPUApp, scene, numImages, options = {}) {
   const { onImage = () => { }, forceRayTracing = true } = options;
   console.log('[FullLights] runFullLightsTraining started, numImages =', numImages);
-  const rtCheckbox = document.getElementById('raytracingCheckbox');
-  const wasRT = rtCheckbox && rtCheckbox.checked;
-  if (forceRayTracing && rtCheckbox) rtCheckbox.checked = true;
+  const renderingSelect = document.getElementById('rendering_type_select');
+  const wasType = getRenderingType();
+  if (forceRayTracing && renderingSelect) {
+    renderingSelect.value = 'raytrace';
+  }
 
   const times = [];
   for (let i = 0; i < numImages; i++) {
@@ -49,7 +63,9 @@ async function runFullLightsTraining(GPUApp, scene, numImages, options = {}) {
     onImage(i, dataUrl, timeMs);
   }
 
-  if (forceRayTracing && rtCheckbox && !wasRT) rtCheckbox.checked = false;
+  if (forceRayTracing && renderingSelect) {
+    renderingSelect.value = wasType;
+  }
   return { times };
 }
 
@@ -91,7 +107,7 @@ function initEvents(GPUApp, scene, renderCallback) {
 }
 
 async function renderScene(GPUApp, scene) {
-  const useRayTracing = document.getElementById('raytracingCheckbox').checked;
+  const useRayTracing = isRayTracingEnabled();
   const method = getSelectedRenderMethod();
 
   // For non-ray-tracing, always use the standard raster path regardless of method.
@@ -135,16 +151,9 @@ async function renderSceneRaster(GPUApp, scene) {
   });
   renderPass.setPipeline(GPUApp.rasterizationPipeline);
   renderPass.setBindGroup(0, GPUApp.bindGroup);
-  const debugCheckbox = document.getElementById('debug_lights_checkbox');
-  const debugOn = debugCheckbox && debugCheckbox.checked;
-  const baseMeshCount = typeof scene.baseMeshCount === 'number' ? scene.baseMeshCount : scene.meshes.length;
-  for (let i = 0; i < baseMeshCount; i++) {
+  // Always draw all meshes including debug light markers
+  for (let i = 0; i < scene.meshes.length; i++) {
     renderPass.draw(scene.meshes[i].indices.length, 1, 0, i);
-  }
-  if (debugOn) {
-    for (let i = baseMeshCount; i < scene.meshes.length; i++) {
-      renderPass.draw(scene.meshes[i].indices.length, 1, 0, i);
-    }
   }
   renderPass.end();
   GPUApp.device.queue.submit([encoder.finish()]);
@@ -159,11 +168,7 @@ async function renderSceneRaster(GPUApp, scene) {
 /** One-shot RT: render the full screen in a single dispatch (all lights, no tiling). */
 async function renderSceneOneShot(GPUApp, scene) {
   const start = performance.now();
-  const debugRenderCheckbox = document.getElementById('debug_render_checkbox');
-  const debugRenderEnabled = debugRenderCheckbox && debugRenderCheckbox.checked;
-  if (debugRenderEnabled) {
-    console.log('[Render] Starting image (one-shot RT)', scene.lightSources?.length ?? 0, 'lights');
-  }
+  console.log('[Render] Starting image (one-shot RT)', scene.lightSources?.length ?? 0, 'lights');
   updateUniforms(GPUApp, scene);
   updateDebugUniform(GPUApp);
   updateMaterialBuffer(GPUApp, scene.materials);
@@ -218,9 +223,7 @@ async function renderSceneOneShot(GPUApp, scene) {
 
   const end = performance.now();
   const frameMs = end - start;
-  if (debugRenderEnabled) {
-    console.log('[Render] One-shot frame in', frameMs.toFixed(3), 'ms');
-  }
+  console.log('[Render] One-shot frame in', frameMs.toFixed(3), 'ms');
   const label = document.getElementById('render_time_label');
   if (label) label.textContent = `${frameMs.toFixed(3)} ms`;
   return frameMs;
@@ -229,11 +232,7 @@ async function renderSceneOneShot(GPUApp, scene) {
 /** Tiled RT: split canvas into tiles, render each sequentially (original approach). */
 async function renderSceneTiles(GPUApp, scene) {
   const start = performance.now();
-  const debugRenderCheckbox = document.getElementById('debug_render_checkbox');
-  const debugRenderEnabled = debugRenderCheckbox && debugRenderCheckbox.checked;
-  if (debugRenderEnabled) {
-    console.log('[Render] Starting image (tiled RT)', scene.lightSources?.length ?? 0, 'lights');
-  }
+  console.log('[Render] Starting image (tiled RT)', scene.lightSources?.length ?? 0, 'lights');
   updateUniforms(GPUApp, scene);
   updateDebugUniform(GPUApp);
   updateMaterialBuffer(GPUApp, scene.materials);
@@ -274,10 +273,10 @@ async function renderSceneTiles(GPUApp, scene) {
   GPUApp.device.queue.submit([clearEncoder.finish()]);
   await GPUApp.device.queue.onSubmittedWorkDone();
 
-  const tileTimes = debugRenderEnabled ? [] : null;
+  const tileTimes = [];
   for (let ty = 0; ty < tilesY; ty++) {
     for (let tx = 0; tx < tilesX; tx++) {
-      const tileStart = debugRenderEnabled ? performance.now() : 0;
+      const tileStart = performance.now();
       const x = tx * tileSize;
       const y = ty * tileSize;
       const w = Math.min(tileSize, GPUApp.canvas.width - x);
@@ -307,7 +306,7 @@ async function renderSceneTiles(GPUApp, scene) {
       GPUApp.device.queue.submit([tileEncoder.finish()]);
       await GPUApp.device.queue.onSubmittedWorkDone();
 
-      if (debugRenderEnabled) {
+      {
         const tileEnd = performance.now();
         tileTimes.push(tileEnd - tileStart);
       }
@@ -336,7 +335,7 @@ async function renderSceneTiles(GPUApp, scene) {
   GPUApp.device.queue.submit([blitEncoder.finish()]);
   await GPUApp.device.queue.onSubmittedWorkDone();
 
-  if (debugRenderEnabled && tileTimes && tileTimes.length > 0) {
+  if (tileTimes.length > 0) {
     const totalTileMs = tileTimes.reduce((acc, t) => acc + t, 0);
     const meanTileMs = totalTileMs / tileCount;
     let variance = 0;
@@ -350,9 +349,7 @@ async function renderSceneTiles(GPUApp, scene) {
 
   const end = performance.now();
   const frameMs = end - start;
-  if (debugRenderEnabled) {
-    console.log('[Render] Tiled frame in', frameMs.toFixed(3), 'ms');
-  }
+  console.log('[Render] Tiled frame in', frameMs.toFixed(3), 'ms');
   const label = document.getElementById('render_time_label');
   if (label) label.textContent = `${frameMs.toFixed(3)} ms`;
   return frameMs;
@@ -364,13 +361,9 @@ async function renderSceneTiles(GPUApp, scene) {
  */
 async function renderSceneAccumulation(GPUApp, scene) {
   const start = performance.now();
-  const debugRenderCheckbox = document.getElementById('debug_render_checkbox');
-  const debugRenderEnabled = debugRenderCheckbox && debugRenderCheckbox.checked;
   const totalLights = scene.lightSources?.length ?? 0;
   const numPasses = Math.max(1, Math.ceil(totalLights / LIGHTS_PER_PASS));
-  if (debugRenderEnabled) {
-    console.log('[Render] Starting accumulation RT:', totalLights, 'lights,', numPasses, 'passes of', LIGHTS_PER_PASS);
-  }
+  console.log('[Render] Starting accumulation RT:', totalLights, 'lights,', numPasses, 'passes of', LIGHTS_PER_PASS);
 
   updateUniforms(GPUApp, scene);
   updateDebugUniform(GPUApp);
@@ -483,9 +476,7 @@ async function renderSceneAccumulation(GPUApp, scene) {
 
   const end = performance.now();
   const frameMs = end - start;
-  if (debugRenderEnabled) {
-    console.log('[Render] Accumulation frame in', frameMs.toFixed(3), 'ms (', numPasses, 'passes)');
-  }
+  console.log('[Render] Accumulation frame in', frameMs.toFixed(3), 'ms (', numPasses, 'passes)');
   const label = document.getElementById('render_time_label');
   if (label) label.textContent = `${frameMs.toFixed(3)} ms`;
   return frameMs;
@@ -512,7 +503,7 @@ async function main() {
 
     async function renderLoop() {
       if (isRendering) return;
-      const useRayTracing = document.getElementById('raytracingCheckbox').checked;
+      const useRayTracing = isRayTracingEnabled();
 
       // Only continuously render when NOT using ray tracing
       if (!useRayTracing) {
@@ -527,7 +518,7 @@ async function main() {
 
     // Function to trigger a render (used by camera events)
     function triggerRender() {
-      const useRayTracing = document.getElementById('raytracingCheckbox').checked;
+      const useRayTracing = isRayTracingEnabled();
       if (!useRayTracing && !isRendering) {
         // For non-raytracing, the render loop will handle it
         // But we can also trigger immediately if needed
@@ -545,24 +536,21 @@ async function main() {
     await renderScene(GPUApp, scene);
 
     // Start continuous rendering loop for non-raytracing mode
-    const raytracingCheckbox = document.getElementById('raytracingCheckbox');
-    if (raytracingCheckbox) {
-      raytracingCheckbox.addEventListener('change', () => {
-        const useRayTracing = raytracingCheckbox.checked;
-        if (!useRayTracing && !animationFrameId) {
-          // Start continuous rendering when ray tracing is turned off
-          renderLoop();
-        } else if (useRayTracing && animationFrameId) {
-          // Stop continuous rendering when ray tracing is turned on
-          cancelAnimationFrame(animationFrameId);
-          animationFrameId = null;
-        }
-      });
-
-      // Start loop if ray tracing is initially off
-      if (!raytracingCheckbox.checked) {
+    const renderingTypeSelect = document.getElementById('rendering_type_select');
+    function onRenderingTypeChange() {
+      const useRayTracing = isRayTracingEnabled();
+      if (!useRayTracing && !animationFrameId) {
         renderLoop();
+      } else if (useRayTracing && animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
       }
+    }
+    if (renderingTypeSelect) {
+      renderingTypeSelect.addEventListener('change', onRenderingTypeChange);
+    }
+    if (!isRayTracingEnabled()) {
+      renderLoop();
     }
 
     // Manual "Generate image" button (for ray tracing mode).
@@ -589,7 +577,7 @@ async function main() {
           scene = await createScene(camAspect, sceneName);
           initGPUBuffers(GPUApp, scene);
           await renderScene(GPUApp, scene);
-          if (raytracingCheckbox && !raytracingCheckbox.checked) renderLoop();
+          if (!isRayTracingEnabled()) renderLoop();
         } catch (e) {
           console.error('[Main] Scene load failed:', e);
         }
@@ -806,7 +794,7 @@ async function main() {
       lcGPU.device.queue.submit([encoder.finish()]);
       await lcGPU.device.queue.onSubmittedWorkDone();
 
-      console.log('[Lightcut] Rendered', nodes.length, 'bounding boxes at depth', depth);
+      //console.log('[Lightcut] Rendered', nodes.length, 'bounding boxes at depth', depth);
     }
 
     // Build button
@@ -830,11 +818,13 @@ async function main() {
         // Use setTimeout to let the UI update
         await new Promise(r => setTimeout(r, 10));
 
-        const method = lightcutMethodSelect ? lightcutMethodSelect.value : 'bruteforce';
+        const method = lightcutMethodSelect ? lightcutMethodSelect.value : 'kdtree-spatial';
         const buildStart = performance.now();
 
-        if (method === 'kdtree') {
-          lightcutTree = buildLightcutTreeKDTree(scene.lightSources);
+        if (method === 'kdtree-spatial') {
+          lightcutTree = buildLightcutTreeKDTree(scene.lightSources, 'spatial');
+        } else if (method === 'kdtree-median') {
+          lightcutTree = buildLightcutTreeKDTree(scene.lightSources, 'median');
         } else {
           lightcutTree = buildLightcutTreeBruteForce(scene.lightSources);
         }

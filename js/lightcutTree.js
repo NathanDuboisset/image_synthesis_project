@@ -161,17 +161,12 @@ export function buildLightcutTreeBruteForce(lightSources) {
     return root;
 }
 
-// ─── 2) KD-tree based pairing ──────────────────────────────────────────────
-//
-// Top-down approach: compute the bounding box of all lights in the set,
-// split along the longest axis at the median, recurse on each half.
-// Produces a balanced binary tree in O(n log n).
-
-export function buildLightcutTreeKDTree(lightSources) {
+export function buildLightcutTreeKDTree(lightSources, method = 'spatial') {
     if (!lightSources || lightSources.length === 0) return null;
 
     // Build an array of { light, index } so we can track original indices
     const items = lightSources.map((l, i) => ({ light: l, index: i }));
+    const useSpatial = method === 'spatial';
 
     function buildRecursive(subset) {
         if (subset.length === 0) return null;
@@ -194,13 +189,29 @@ export function buildLightcutTreeKDTree(lightSources) {
         if (extents[1] > extents[axis]) axis = 1;
         if (extents[2] > extents[axis]) axis = 2;
 
-        // Sort along the chosen axis and split at the median
-        subset.sort((a, b) => a.light.position[axis] - b.light.position[axis]);
-        const mid = Math.floor(subset.length / 2);
-
-        const left = buildRecursive(subset.slice(0, mid));
-        const right = buildRecursive(subset.slice(mid));
-
+        let left, right;
+        if (useSpatial) {
+            // spatial partition : split midpoint
+            const midpoint = (minP[axis] + maxP[axis]) / 2;
+            let leftslice = [];
+            let rightslice = [];
+            for (const item of subset) {
+                if (item.light.position[axis] < midpoint) {
+                    leftslice.push(item);
+                } else {
+                    rightslice.push(item);
+                }
+            }
+            left = buildRecursive(leftslice);
+            right = buildRecursive(rightslice);
+        }
+        else {
+            // Sort along the chosen axis and split at the median
+            subset.sort((a, b) => a.light.position[axis] - b.light.position[axis]);
+            const mid = Math.floor(subset.length / 2);
+            left = buildRecursive(subset.slice(0, mid));
+            right = buildRecursive(subset.slice(mid));
+        }
         if (!left) return right;
         if (!right) return left;
 
@@ -212,9 +223,6 @@ export function buildLightcutTreeKDTree(lightSources) {
     return root;
 }
 
-// ─── Query utilities ────────────────────────────────────────────────────────
-
-/** Collect all nodes at a specific depth ("rank"). */
 export function getNodesAtDepth(root, targetDepth) {
     const result = [];
     if (!root) return result;

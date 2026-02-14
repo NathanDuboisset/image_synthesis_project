@@ -242,8 +242,7 @@ function debugLightsAtPoint(label, scene, point) {
 }
 
 function debugLights(scene) {
-  const checkbox = typeof document !== 'undefined' ? document.getElementById('debug_lights_checkbox') : null;
-  if (!checkbox || !checkbox.checked) return;
+  // Debug lights always enabled (no checkbox anymore).
   const bounds = computeMeshesBounds(scene.meshes);
   if (!bounds) return;
   const center = [
@@ -284,8 +283,8 @@ function addDebugLightMeshes(scene) {
   const radius = 0.05;
   const basePositions = new Float32Array([
     -radius, 0.0, -radius,
-     radius, 0.0, -radius,
-     0.0,   0.0,  radius,
+    radius, 0.0, -radius,
+    0.0, 0.0, radius,
   ]);
   // Simple upward normal; these are only for visualization in raster mode.
   const baseNormals = new Float32Array([

@@ -70,7 +70,9 @@ export function updateMaterialBuffer(GPUApp, materials) {
 
 export function fillLightSourceStagingBuffer(GPUApp, lightSources) {
   const sizeOfLightSource = 12;
-  const useRT = document.getElementById('raytracingCheckbox').checked;
+  const renderingSelect = document.getElementById('rendering_type_select');
+  const renderingType = renderingSelect ? renderingSelect.value : 'raytrace';
+  const useRT = renderingType === 'raytrace' || renderingType === 'lightcuts';
   // Total luminance budget for RT mode, divided equally among lights.
   const BASE_TOTAL_LUMINANCE = 2;
   const numLights = Math.max(1, lightSources.length);
@@ -357,14 +359,7 @@ export function updateLightRange(GPUApp, startIndex, endIndex) {
 }
 
 export function updateDebugUniform(GPUApp) {
-  const select = document.getElementById('debug_mode_select');
-  let mode = 0;
-  if (select) {
-    const parsed = Number(select.value);
-    if (!Number.isNaN(parsed)) {
-      mode = parsed | 0;
-    }
-  }
-  GPUApp.debugUniformData[0] = mode;
+  // Debug mode always 0 (normal PBR) for main render.
+  GPUApp.debugUniformData[0] = 0;
   GPUApp.device.queue.writeBuffer(GPUApp.debugUniformBuffer, 0, GPUApp.debugUniformData);
 }
