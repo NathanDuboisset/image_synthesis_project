@@ -154,6 +154,10 @@ export interface GPUApp {
     blitSampler: GPUSampler;
     accumBlitBindGroup: GPUBindGroup;
     accumFinalBindGroup: GPUBindGroup;
+
+    // Lightcut tree (GPU storage)
+    lightcutTreeBuffer: GPUBuffer;
+    lightcutTreeNodeCount: number;
 }
 
 // ─── Lightcut Tree ──────────────────────────────────────────────────────────

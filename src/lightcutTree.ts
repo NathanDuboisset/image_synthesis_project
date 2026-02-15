@@ -253,3 +253,72 @@ export function flattenTree(root: LightcutNode | null): LightcutNode[] {
     }
     return result;
 }
+
+// ─── GPU serialization ──────────────────────────────────────────────────────
+
+/** Number of f32 values per node in the GPU flat buffer. */
+const FLOATS_PER_GPU_NODE = 16;
+
+/**
+ * Flatten the lightcut tree into a GPU-ready Float32Array (level-order BFS).
+ *
+ * Each node occupies 16 floats (64 bytes), matching the WGSL struct layout:
+ *
+ *   0–2  representative.position (vec3<f32>)
+ *   3    totalIntensity          (f32)
+ *   4–6  representative.color    (vec3<f32>)
+ *   7    lightCount              (f32)
+ *   8–10 aabb.min                (vec3<f32>)
+ *   11   leftChildIndex          (f32, −1 = leaf)
+ *   12–14 aabb.max               (vec3<f32>)
+ *   15   rightChildIndex         (f32, −1 = leaf)
+ */
+export function flattenTreeForGPU(root: LightcutNode | null): { data: Float32Array; nodeCount: number } {
+    if (!root) return { data: new Float32Array(FLOATS_PER_GPU_NODE), nodeCount: 0 };
+
+    // BFS to assign contiguous indices
+    const ordered: LightcutNode[] = [];
+    const indexMap = new Map<LightcutNode, number>();
+    const queue: LightcutNode[] = [root];
+    while (queue.length > 0) {
+        const node = queue.shift()!;
+        indexMap.set(node, ordered.length);
+        ordered.push(node);
+        if (node.left) queue.push(node.left);
+        if (node.right) queue.push(node.right);
+    }
+
+    const nodeCount = ordered.length;
+    const data = new Float32Array(nodeCount * FLOATS_PER_GPU_NODE);
+
+    for (let i = 0; i < nodeCount; i++) {
+        const n = ordered[i]!;
+        const o = i * FLOATS_PER_GPU_NODE;
+
+        // representative position + totalIntensity
+        data[o + 0] = n.representative.position[0];
+        data[o + 1] = n.representative.position[1];
+        data[o + 2] = n.representative.position[2];
+        data[o + 3] = n.totalIntensity;
+
+        // representative color + lightCount
+        data[o + 4] = n.representative.color[0];
+        data[o + 5] = n.representative.color[1];
+        data[o + 6] = n.representative.color[2];
+        data[o + 7] = n.lightCount;
+
+        // aabb.min + leftChild index
+        data[o + 8] = n.aabb.min[0];
+        data[o + 9] = n.aabb.min[1];
+        data[o + 10] = n.aabb.min[2];
+        data[o + 11] = n.left ? indexMap.get(n.left)! : -1;
+
+        // aabb.max + rightChild index
+        data[o + 12] = n.aabb.max[0];
+        data[o + 13] = n.aabb.max[1];
+        data[o + 14] = n.aabb.max[2];
+        data[o + 15] = n.right ? indexMap.get(n.right)! : -1;
+    }
+
+    return { data, nodeCount };
+}

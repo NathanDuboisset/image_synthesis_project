@@ -5,15 +5,19 @@ import {
   updateMaterialBuffer, updateLightSourceBuffer, updateDebugUniform,
   initAccumulationResources, updateLightRange, updateAccumFinalPassCount,
   createMeshBuffers, createMaterialBuffer, createLightSourceBuffer, createGPUBuffer,
+  uploadLightcutTree,
 } from './gpu.ts';
 import { pan, updateCamera } from './camera.ts';
 import { mat4Invert, mat4Transpose } from './math.ts';
-import { buildLightcutTreeBruteForce, buildLightcutTreeKDTree, getNodesAtDepth, getTreeMaxDepth } from './lightcutTree.ts';
+import { buildLightcutTreeBruteForce, buildLightcutTreeKDTree, getNodesAtDepth, getTreeMaxDepth, flattenTreeForGPU } from './lightcutTree.ts';
 import { createBBoxMeshes, createIntensityMaterials } from './lightcutViz.ts';
 
 // Tile ratio controlling ray-tracing tile size vs. light count:
 // tileSize ≈ TILERATIO / numLights, clamped to [32, 256].
 const TILERATIO = 128000;
+
+/** Default maximum cut size for per-pixel lightcuts (configurable via future slider). */
+let LIGHTCUT_SIZE = 16;
 
 // Number of lights rendered per pass in accumulation mode.
 const LIGHTS_PER_PASS = 10;
@@ -55,12 +59,12 @@ async function runFullLightsTraining(
   numImages: number,
   options: FullLightsTrainingOptions = {},
 ): Promise<{ times: number[] }> {
-  const { onImage = () => { }, forceRayTracing = true } = options;
+  const { onImage = () => { }, forceRayTracing = false } = options;
   console.log('[FullLights] runFullLightsTraining started, numImages =', numImages);
-  const renderingSelect = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
-  const wasType = getRenderingType();
-  if (forceRayTracing && renderingSelect) {
-    renderingSelect.value = 'raytrace';
+  // Remove forceful override unless explicitly requested
+  if (forceRayTracing) {
+    const renderingSelect = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
+    if (renderingSelect) renderingSelect.value = 'raytrace';
   }
 
   const times: number[] = [];
@@ -72,9 +76,12 @@ async function runFullLightsTraining(
     onImage(i, dataUrl, timeMs);
   }
 
+  /*
+  const renderingSelect = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
   if (forceRayTracing && renderingSelect) {
-    renderingSelect.value = wasType;
+    // renderingSelect.value = wasType; // Don't strive to restore if we simply didn't change it
   }
+  */
   return { times };
 }
 
@@ -118,6 +125,19 @@ function initEvents(app: GPUApp, scene: Scene, renderCallback: () => void): void
 async function renderScene(app: GPUApp, scene: Scene): Promise<number> {
   const useRayTracing = isRayTracingEnabled();
   const method = getSelectedRenderMethod();
+  const renderingType = getRenderingType();
+
+  // Guard: if lightcuts requested but no tree built, fail loudly.
+  if (renderingType === 'lightcuts') {
+    if (!app.lightcutTreeBuffer || app.lightcutTreeNodeCount === 0) {
+      console.error('[Lightcuts] Cannot render: no lightcut tree built/uploaded. Build one in the Lightcut Tree tab first.');
+      alert('Error: Lightcuts selected but no tree built. Please build a lightcut tree first.');
+      return 0;
+    }
+    updateDebugUniform(app, app.lightcutTreeNodeCount, LIGHTCUT_SIZE);
+  } else {
+    updateDebugUniform(app, 0, 0);
+  }
 
   if (!useRayTracing) {
     return renderSceneRaster(app, scene);
@@ -173,9 +193,11 @@ async function renderSceneRaster(app: GPUApp, scene: Scene): Promise<number> {
 /** One-shot RT: render the full screen in a single dispatch. */
 async function renderSceneOneShot(app: GPUApp, scene: Scene): Promise<number> {
   const start = performance.now();
-  console.log('[Render] Starting image (one-shot RT)', scene.lightSources?.length ?? 0, 'lights');
+  const rtType = getRenderingType();
+  const modeLabel = rtType === 'lightcuts' ? 'Lightcuts' : 'RT';
+  console.log(`[Render] Starting image (one-shot ${modeLabel})`, scene.lightSources?.length ?? 0, 'lights');
   updateUniforms(app, scene);
-  updateDebugUniform(app);
+  // updateDebugUniform(app); // Already set in renderScene
   updateMaterialBuffer(app, scene.materials);
   updateLightSourceBuffer(app, scene.lightSources);
 
@@ -234,9 +256,11 @@ async function renderSceneOneShot(app: GPUApp, scene: Scene): Promise<number> {
 /** Tiled RT: split canvas into tiles, render each sequentially. */
 async function renderSceneTiles(app: GPUApp, scene: Scene): Promise<number> {
   const start = performance.now();
-  console.log('[Render] Starting image (tiled RT)', scene.lightSources?.length ?? 0, 'lights');
+  const rtType = getRenderingType();
+  const modeLabel = rtType === 'lightcuts' ? 'Lightcuts' : 'RT';
+  console.log(`[Render] Starting image (tiled ${modeLabel})`, scene.lightSources?.length ?? 0, 'lights');
   updateUniforms(app, scene);
-  updateDebugUniform(app);
+  // updateDebugUniform(app); // Already set in renderScene
   updateMaterialBuffer(app, scene.materials);
   updateLightSourceBuffer(app, scene.lightSources);
 
@@ -360,12 +384,14 @@ async function renderSceneTiles(app: GPUApp, scene: Scene): Promise<number> {
  */
 async function renderSceneAccumulation(app: GPUApp, scene: Scene): Promise<number> {
   const start = performance.now();
+  const rtType = getRenderingType();
+  const modeLabel = rtType === 'lightcuts' ? 'Lightcuts' : 'RT';
   const totalLights = scene.lightSources?.length ?? 0;
   const numPasses = Math.max(1, Math.ceil(totalLights / LIGHTS_PER_PASS));
-  console.log('[Render] Starting accumulation RT:', totalLights, 'lights,', numPasses, 'passes of', LIGHTS_PER_PASS);
+  console.log(`[Render] Starting accumulation ${modeLabel}:`, totalLights, 'lights,', numPasses, 'passes of', LIGHTS_PER_PASS);
 
   updateUniforms(app, scene);
-  updateDebugUniform(app);
+  // updateDebugUniform(app); // Already set in renderScene
   updateMaterialBuffer(app, scene.materials);
   updateLightSourceBuffer(app, scene.lightSources);
 
@@ -493,6 +519,9 @@ async function main(): Promise<void> {
     console.log('[Main] Scene ready, meshes:', scene.meshes.length, 'lights:', scene.lightSources.length);
     let animationFrameId: number | null = null;
     let isRendering = false;
+    let lightcutTree: LightcutNode | null = null;
+
+    // Auto-build lightcut tree for initial scene (moved down)
 
     async function renderLoop(): Promise<void> {
       if (isRendering) return;
@@ -520,6 +549,14 @@ async function main(): Promise<void> {
     initEvents(app, scene, triggerRender);
     initGPUBuffers(app, scene);
     console.log('[Main] GPU buffers initialized');
+
+    // Auto-build lightcut tree for initial scene
+    lightcutTree = buildLightcutTreeKDTree(scene.lightSources, 'spatial');
+    {
+      const { data, nodeCount } = flattenTreeForGPU(lightcutTree);
+      uploadLightcutTree(app, data, nodeCount);
+      console.log(`[Main] Auto-built lightcut tree (spatial): ${nodeCount} nodes`);
+    }
 
     await renderScene(app, scene);
 
@@ -561,6 +598,15 @@ async function main(): Promise<void> {
         try {
           scene = await createScene(camAspect, sceneName);
           initGPUBuffers(app, scene);
+
+          // Auto-build lightcut tree for new scene
+          lightcutTree = buildLightcutTreeKDTree(scene.lightSources, 'spatial');
+          {
+            const { data, nodeCount } = flattenTreeForGPU(lightcutTree);
+            uploadLightcutTree(app, data, nodeCount);
+            console.log(`[Main] Auto-built lightcut tree (spatial): ${nodeCount} nodes`);
+          }
+
           await renderScene(app, scene);
           if (!isRayTracingEnabled()) renderLoop();
         } catch (e) {
@@ -598,7 +644,7 @@ async function main(): Promise<void> {
     });
 
     // ─── Lightcut Tree tab ─────────────────────────────────────────────────
-    let lightcutTree: LightcutNode | null = null;
+    // ─── Lightcut Tree tab ─────────────────────────────────────────────────
 
     /**
      * Lightweight GPU context for the lightcut visualization canvas.
@@ -738,6 +784,8 @@ async function main(): Promise<void> {
       lcGPU.lightSourceBuffer = createLightSourceBuffer(tempApp, vizScene.lightSources);
       lcGPU.uniformBuffer = createGPUBuffer(lcGPU.device, lcGPU.uniformData as ArrayBufferView, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
       lcGPU.debugUniformBuffer = createGPUBuffer(lcGPU.device, lcGPU.debugUniformData as ArrayBufferView, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+      // Dummy lightcut tree buffer for viz (lightcuts are disabled in viz mode)
+      const lcDummyBuf = createGPUBuffer(lcGPU.device, new Float32Array(16), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
       lcGPU.bindGroup = lcGPU.device.createBindGroup({
         layout: lcGPU.bindGroupLayout,
         entries: [
@@ -749,6 +797,7 @@ async function main(): Promise<void> {
           { binding: 5, resource: { buffer: lcGPU.materialBuffer } },
           { binding: 6, resource: { buffer: lcGPU.lightSourceBuffer } },
           { binding: 7, resource: { buffer: lcGPU.debugUniformBuffer } },
+          { binding: 8, resource: { buffer: lcDummyBuf } },
         ],
       });
 
@@ -834,6 +883,11 @@ async function main(): Promise<void> {
 
         const buildTime = performance.now() - buildStart;
         const maxDepth = getTreeMaxDepth(lightcutTree);
+
+        // Serialize tree to GPU and upload
+        const { data: treeData, nodeCount } = flattenTreeForGPU(lightcutTree);
+        uploadLightcutTree(app, treeData, nodeCount);
+        console.log(`[Lightcut] Tree built: ${nodeCount} nodes, maxDepth=${maxDepth}, uploaded to GPU`);
 
         if (lightcutMaxDepthEl) lightcutMaxDepthEl.textContent = String(maxDepth);
         if (lightcutTotalLightsEl) lightcutTotalLightsEl.textContent = String(scene.lightSources.length);

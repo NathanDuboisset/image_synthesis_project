@@ -430,6 +430,14 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
     scene.cameraConfig = null;
   }
 
+  // Normalize light intensities for energy conservation
+  const BASE_TOTAL_LUMINANCE = 2.0;
+  const numLights = Math.max(1, scene.lightSources.length);
+  const perLightIntensity = BASE_TOTAL_LUMINANCE / numLights;
+  for (const l of scene.lightSources) {
+    l.intensity = perLightIntensity;
+  }
+
   addDebugLightMeshes(scene);
   scene.time = 0;
   debugLights(scene);

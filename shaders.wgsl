@@ -48,7 +48,9 @@ struct Scene {
 
 struct DebugParams {
   mode: u32,
-  _pad: vec3<u32>,
+  lightcutNodeCount: u32,
+  maxCutSize: u32,
+  _pad: u32,
 };
 
 @group(0) @binding(0)
@@ -74,6 +76,22 @@ var<storage, read> lightSources : array<LightSource>;
 
 @group(0) @binding(7)
 var<uniform> debugParams : DebugParams;
+
+// ─── Lightcut tree (GPU storage) ──────────────────────────────────────────
+
+struct LightcutGPUNode {
+  position: vec3<f32>,     // representative position (world space)
+  intensity: f32,          // cluster totalIntensity
+  color: vec3<f32>,        // representative color
+  lightCount: f32,         // number of leaves under this node
+  aabbMin: vec3<f32>,
+  leftChild: f32,          // BFS index, -1 = leaf
+  aabbMax: vec3<f32>,
+  rightChild: f32,         // BFS index, -1 = leaf
+};
+
+@group(0) @binding(8)
+var<storage, read> lightcutTree : array<LightcutGPUNode>;
 
 struct RasterVertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -195,6 +213,130 @@ fn computeRadiance(position: vec3f, normal: vec3f, materialIndex: u32, wo: vec3f
     colorResponse += lightShade(position, normal, materialIndex, lightSourceIndex, wo);
   }
   return colorResponse;
+}
+
+// ─── Lightcuts: per-pixel tree traversal ─────────────────────────────────
+
+const LC_MAX_CUT = 32u;   // hard upper bound on cut array size
+
+/// Shade a single lightcut cluster representative at a world-space shading point
+/// using the same PBR + shadow-ray logic as the normal light loop.
+fn shadeLightcutNode(
+  node: LightcutGPUNode,
+  worldPos: vec3f,
+  worldNormal: vec3f,
+  viewPos: vec3f,
+  viewNormal: vec3f,
+  materialIndex: u32,
+  wo: vec3f
+) -> vec3f {
+  let L = node.position - worldPos;
+  let dist = length(L);
+  let dir = normalize(L);
+
+  // Shadow ray (same as normal RT path)
+  var shadowRay: Ray;
+  shadowRay.origin = worldPos;
+  shadowRay.direction = dir;
+  var shadowHit: Hit;
+  if (rayTrace(shadowRay, dist - 0.01, true, &shadowHit)) {
+    return vec3f(0.0);
+  }
+
+  // PBR shading
+  let att = 10.0 / (dist * dist + 0.1);
+  let radiance = node.color * node.intensity * att;
+  let cam = scene.camera;
+  let viewLightPos = (cam.viewMat * vec4f(node.position, 1.0)).xyz;
+  let wi = normalize(viewLightPos - viewPos);
+  let m = materials[materialIndex];
+  let fr = BRDF(wi, wo, viewNormal, m.albedo, m.roughness, m.metalness);
+  return radiance * fr * max(0.0, dot(wi, viewNormal));
+}
+
+/// Error bound for a lightcut node at a shading point.
+/// Captures both intensity importance and geometric spread of the cluster.
+fn lightcutErrorBound(node: LightcutGPUNode, worldPos: vec3f) -> f32 {
+  let L = node.position - worldPos;
+  let distSq = dot(L, L) + 0.001;
+  let dist = sqrt(distSq);
+  let diag = length(node.aabbMax - node.aabbMin);
+  return node.intensity / distSq * diag / dist;
+}
+
+/// Per-pixel greedy lightcut traversal.
+/// Starts with the root; iteratively splits the node with the highest error
+/// bound until the cut reaches maxCutSize or all entries are leaves.
+fn computeRadianceLightcuts(
+  worldPos: vec3f,
+  worldNormal: vec3f,
+  viewPos: vec3f,
+  viewNormal: vec3f,
+  materialIndex: u32,
+  wo: vec3f
+) -> vec3f {
+  let nodeCount = debugParams.lightcutNodeCount;
+  let maxCut = min(debugParams.maxCutSize, LC_MAX_CUT);
+
+  // Cut stored as fixed-size arrays (WGSL requires compile-time size)
+  var cutIdx:   array<u32, 32>;   // node indices
+  var cutError: array<f32, 32>;   // cached error bounds
+  var cutSize: u32 = 0u;
+
+  if (nodeCount == 0u) {
+    return vec3f(0.0);
+  }
+
+  // Seed with root node (index 0)
+  cutIdx[0]   = 0u;
+  cutError[0] = lightcutErrorBound(lightcutTree[0], worldPos);
+  cutSize = 1u;
+
+  // Greedy refinement
+  for (var iter = 0u; iter < 256u; iter++) {
+    if (cutSize >= maxCut) { break; }
+
+    // Find the cut entry with the highest error bound
+    var worstIdx = 0u;
+    var worstErr = -1.0;
+    for (var c = 0u; c < cutSize; c++) {
+      if (cutError[c] > worstErr) {
+        worstErr = cutError[c];
+        worstIdx = c;
+      }
+    }
+
+    // If worst entry is a leaf, we can't split further — done
+    let nodeId = cutIdx[worstIdx];
+    let node = lightcutTree[nodeId];
+    let leftI  = i32(node.leftChild);
+    let rightI = i32(node.rightChild);
+    if (leftI < 0 && rightI < 0) { break; }
+
+    // Replace worst entry with left child
+    if (leftI >= 0 && u32(leftI) < nodeCount) {
+      cutIdx[worstIdx]   = u32(leftI);
+      cutError[worstIdx] = lightcutErrorBound(lightcutTree[u32(leftI)], worldPos);
+    } else {
+      // No left child — keep as leaf with zero error
+      cutError[worstIdx] = 0.0;
+    }
+
+    // Append right child
+    if (rightI >= 0 && u32(rightI) < nodeCount && cutSize < LC_MAX_CUT) {
+      cutIdx[cutSize]   = u32(rightI);
+      cutError[cutSize] = lightcutErrorBound(lightcutTree[u32(rightI)], worldPos);
+      cutSize += 1u;
+    }
+  }
+
+  // Shade each representative in the final cut
+  var color = vec3f(0.0);
+  for (var c = 0u; c < cutSize; c++) {
+    let n = lightcutTree[cutIdx[c]];
+    color += shadeLightcutNode(n, worldPos, worldNormal, viewPos, viewNormal, materialIndex, wo);
+  }
+  return color;
 }
 
 
@@ -393,7 +535,16 @@ fn shadeRT(hit: Hit) -> vec4f {
 
   var outputColor = vec3f(0.0);
   var visibleCount = 0.0;
-  
+
+  // ── Lightcuts path: per-pixel tree traversal ──────────────────────
+  if (debugParams.lightcutNodeCount > 0u) {
+    outputColor = computeRadianceLightcuts(
+      worldPos, worldNormal, viewPos, viewNormal, mesh.materialIndex, wo
+    );
+    return vec4f(outputColor, 1.0);
+  }
+
+  // ── Normal light loop ─────────────────────────────────────────────
   // Use light range from uniforms (supports accumulation passes)
   let startIdx = u32(scene.lightStartIndex);
   let endIdx = u32(scene.lightEndIndex);

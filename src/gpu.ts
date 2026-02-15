@@ -71,22 +71,16 @@ export function updateMaterialBuffer(app: GPUApp, materials: Material[]): void {
 
 export function fillLightSourceStagingBuffer(app: GPUApp, lightSources: LightSource[]): void {
   const sizeOfLightSource = 12;
-  const renderingSelect = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
-  const renderingType = (renderingSelect ? renderingSelect.value : 'raytrace') as RenderingType;
-  const useRT = renderingType === 'raytrace' || renderingType === 'lightcuts' || renderingType === 'stochastic_lightcuts';
-  // Total luminance budget for RT mode, divided equally among lights.
-  const BASE_TOTAL_LUMINANCE = 2;
-  const numLights = Math.max(1, lightSources.length);
-  const perLightIntensity = useRT ? (BASE_TOTAL_LUMINANCE / numLights) : 1.0;
+  // Intensity is already normalized in scene creation.
   for (let i = 0; i < lightSources.length; i++) {
     const l = lightSources[i]!;
     const offset = i * sizeOfLightSource;
     app.lightSourceStagingBuffer.set(l.position, offset);
-    app.lightSourceStagingBuffer[offset + 3] = useRT ? perLightIntensity : l.intensity;
+    app.lightSourceStagingBuffer[offset + 3] = l.intensity;
     app.lightSourceStagingBuffer.set(l.color, offset + 4);
     app.lightSourceStagingBuffer[offset + 7] = l.angle;
     app.lightSourceStagingBuffer.set(l.spot, offset + 8);
-    app.lightSourceStagingBuffer[offset + 11] = useRT ? 1 : 0;
+    app.lightSourceStagingBuffer[offset + 11] = l.useRaytracedShadows ? 1 : 0;
   }
 }
 
@@ -108,6 +102,11 @@ export function initGPUBuffers(app: GPUApp, scene: Scene): void {
   app.lightSourceBuffer = createLightSourceBuffer(app, scene.lightSources);
   app.uniformBuffer = createGPUBuffer(app.device, app.uniformData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   app.debugUniformBuffer = createGPUBuffer(app.device, app.debugUniformData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+
+  // Dummy lightcut tree buffer (1 node = 64 bytes) — replaced when a tree is built
+  app.lightcutTreeBuffer = createGPUBuffer(app.device, new Float32Array(16), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  app.lightcutTreeNodeCount = 0;
+
   app.bindGroup = app.device.createBindGroup({
     layout: app.bindGroupLayout,
     entries: [
@@ -119,6 +118,7 @@ export function initGPUBuffers(app: GPUApp, scene: Scene): void {
       { binding: 5, resource: { buffer: app.materialBuffer } },
       { binding: 6, resource: { buffer: app.lightSourceBuffer } },
       { binding: 7, resource: { buffer: app.debugUniformBuffer } },
+      { binding: 8, resource: { buffer: app.lightcutTreeBuffer } },
     ],
   });
 }
@@ -136,6 +136,7 @@ export function initRenderPipeline(app: GPUApp, shaderCode: string): void {
       { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
       { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
       { binding: 7, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      { binding: 8, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
     ],
   });
   app.rasterizationPipeline = app.device.createRenderPipeline({
@@ -346,8 +347,45 @@ export function updateLightRange(app: GPUApp, startIndex: number, endIndex: numb
   app.device.queue.writeBuffer(app.uniformBuffer, 86 * 4, app.uniformData.buffer, app.uniformData.byteOffset + 86 * 4, 8);
 }
 
-export function updateDebugUniform(app: GPUApp): void {
-  // Debug mode always 0 (normal PBR) for main render.
-  app.debugUniformData[0] = 0;
+/**
+ * Write debug/lightcut params to the debug uniform buffer.
+ *   [0] = debugMode        (0 = normal PBR)
+ *   [1] = lightcutNodeCount (0 = lightcuts disabled)
+ *   [2] = maxCutSize        (max lightcut representatives per pixel)
+ */
+export function updateDebugUniform(app: GPUApp, lightcutNodeCount: number = 0, maxCutSize: number = 0): void {
+  app.debugUniformData[0] = 0;                  // debugMode: normal PBR
+  app.debugUniformData[1] = lightcutNodeCount;   // 0 means disabled
+  app.debugUniformData[2] = maxCutSize;
   app.device.queue.writeBuffer(app.debugUniformBuffer, 0, app.debugUniformData as unknown as BufferSource);
+}
+
+/**
+ * Upload a new lightcut tree buffer and rebuild the bind group.
+ * @param treeData   Flat Float32Array from flattenTreeForGPU().
+ * @param nodeCount  Number of nodes in the tree.
+ */
+export function uploadLightcutTree(app: GPUApp, treeData: Float32Array, nodeCount: number): void {
+  // Destroy old buffer if any
+  if (app.lightcutTreeBuffer) app.lightcutTreeBuffer.destroy();
+
+  app.lightcutTreeBuffer = createGPUBuffer(app.device, treeData, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  app.lightcutTreeNodeCount = nodeCount;
+
+  // Rebuild bind group with the new tree buffer
+  app.bindGroup = app.device.createBindGroup({
+    layout: app.bindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: app.uniformBuffer } },
+      { binding: 1, resource: { buffer: app.meshBuffers.positionBuffer } },
+      { binding: 2, resource: { buffer: app.meshBuffers.normalBuffer } },
+      { binding: 3, resource: { buffer: app.meshBuffers.indexBuffer } },
+      { binding: 4, resource: { buffer: app.meshBuffers.meshBuffer } },
+      { binding: 5, resource: { buffer: app.materialBuffer } },
+      { binding: 6, resource: { buffer: app.lightSourceBuffer } },
+      { binding: 7, resource: { buffer: app.debugUniformBuffer } },
+      { binding: 8, resource: { buffer: app.lightcutTreeBuffer } },
+    ],
+  });
+  console.log(`[GPU] Lightcut tree uploaded: ${nodeCount} nodes, ${treeData.byteLength} bytes`);
 }
