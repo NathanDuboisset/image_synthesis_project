@@ -71,12 +71,20 @@ export function updateMaterialBuffer(app: GPUApp, materials: Material[]): void {
 
 export function fillLightSourceStagingBuffer(app: GPUApp, lightSources: LightSource[]): void {
   const sizeOfLightSource = 12;
-  // Intensity is already normalized in scene creation.
+  const renderingSelect = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
+  const renderingType = (renderingSelect ? renderingSelect.value : 'raytrace') as RenderingType;
+  const useRT = renderingType === 'raytrace' || renderingType === 'lightcuts' || renderingType === 'stochastic_lightcuts';
+
   for (let i = 0; i < lightSources.length; i++) {
     const l = lightSources[i]!;
     const offset = i * sizeOfLightSource;
+
+    // For Raster, use a higher baseline intensity (original raw value equivalent or 1.0).
+    // RT modes use the normalized intensity computed in createScene.
+    const intensity = useRT ? l.intensity : 0.05;
+
     app.lightSourceStagingBuffer.set(l.position, offset);
-    app.lightSourceStagingBuffer[offset + 3] = l.intensity;
+    app.lightSourceStagingBuffer[offset + 3] = intensity;
     app.lightSourceStagingBuffer.set(l.color, offset + 4);
     app.lightSourceStagingBuffer[offset + 7] = l.angle;
     app.lightSourceStagingBuffer.set(l.spot, offset + 8);
