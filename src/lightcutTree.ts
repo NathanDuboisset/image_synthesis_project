@@ -26,10 +26,10 @@ function aabbFromPoint(p: Vec3): AABB {
     return { min: [p[0], p[1], p[2]], max: [p[0], p[1], p[2]] };
 }
 
-/** Metric for pairing: distance between representative positions + bounding-box diagonal growth. */
+// Cost function for pairing nodes
 function mergeCost(nodeA: LightcutNode, nodeB: LightcutNode): number {
     const posDistSq = vec3Dist2(nodeA.representative.position, nodeB.representative.position);
-    // Also penalise resulting bounding-box volume to discourage pairing far-apart lights
+    // Add volume term to keep clusters compact
     const merged = aabbUnion(nodeA.aabb, nodeB.aabb);
     const dx = merged.max[0] - merged.min[0];
     const dy = merged.max[1] - merged.min[1];
@@ -41,14 +41,16 @@ function mergeCost(nodeA: LightcutNode, nodeB: LightcutNode): number {
 // ─── Node creation ──────────────────────────────────────────────────────────
 
 function createLeafNode(light: LightSource, index: number): LightcutNode {
+    // If not visible in RT, zero out intensity so it has no flux in the tree
+    const intensity = (light.visibleInRT === false) ? 0.0 : light.intensity;
     return {
         aabb: aabbFromPoint(light.position),
         representative: {
             position: [...light.position],
-            intensity: light.intensity,
+            intensity: intensity,
             color: [...light.color],
         },
-        totalIntensity: light.intensity,
+        totalIntensity: intensity,
         left: null,
         right: null,
         depth: 0,
@@ -60,7 +62,7 @@ function createLeafNode(light: LightSource, index: number): LightcutNode {
 function createInternalNode(left: LightcutNode, right: LightcutNode): LightcutNode {
     const aabb = aabbUnion(left.aabb, right.aabb);
     const totalInt = left.totalIntensity + right.totalIntensity;
-    // Intensity-weighted average position and color
+    // Weighted average for position and color
     const wL = left.totalIntensity / (totalInt || 1);
     const wR = right.totalIntensity / (totalInt || 1);
     const representative: LightcutRepresentative = {
@@ -97,14 +99,14 @@ function assignDepths(node: LightcutNode | null, depth: number): void {
     assignDepths(node.right, depth + 1);
 }
 
-/** Returns the maximum depth in the tree. */
+// Get max depth
 function treeMaxDepth(node: LightcutNode | null): number {
     if (!node) return -1;
     if (!node.left && !node.right) return node.depth;
     return Math.max(treeMaxDepth(node.left), treeMaxDepth(node.right));
 }
 
-// ─── 1) Brute-force pairing ────────────────────────────────────────────────
+// 1) Brute-force building
 
 export function buildLightcutTreeBruteForce(lightSources: LightSource[]): LightcutNode | null {
     if (!lightSources || lightSources.length === 0) return null;
@@ -144,7 +146,7 @@ export function buildLightcutTreeBruteForce(lightSources: LightSource[]): Lightc
     return root;
 }
 
-// ─── 2) KD-tree ─────────────────────────────────────────────────────────────
+// 2) KD-tree building
 
 interface LightItem {
     light: LightSource;
@@ -154,7 +156,11 @@ interface LightItem {
 export function buildLightcutTreeKDTree(lightSources: LightSource[], method: 'spatial' | 'median' = 'spatial'): LightcutNode | null {
     if (!lightSources || lightSources.length === 0) return null;
 
-    const items: LightItem[] = lightSources.map((l, i) => ({ light: l, index: i }));
+    const items: LightItem[] = lightSources
+        .map((l, i) => ({ light: l, index: i }))
+        .filter(item => item.light.visibleInRT !== false);
+
+    if (items.length === 0) return null;
     const useSpatial = method === 'spatial';
 
     function buildRecursive(subset: LightItem[]): LightcutNode | null {
@@ -235,12 +241,10 @@ export function getNodesAtDepth(root: LightcutNode | null, targetDepth: number):
     return result;
 }
 
-/** Get tree max depth (0-indexed, so a single-node tree has depth 0). */
 export function getTreeMaxDepth(root: LightcutNode | null): number {
     return treeMaxDepth(root);
 }
 
-/** Flatten all nodes in the tree into an array (level-order). */
 export function flattenTree(root: LightcutNode | null): LightcutNode[] {
     if (!root) return [];
     const result: LightcutNode[] = [];
@@ -256,25 +260,9 @@ export function flattenTree(root: LightcutNode | null): LightcutNode[] {
 
 // ─── GPU serialization ──────────────────────────────────────────────────────
 
-/** Number of f32 values per node in the GPU flat buffer. */
-const FLOATS_PER_GPU_NODE = 16;
-
-/**
- * Flatten the lightcut tree into a GPU-ready Float32Array (level-order BFS).
- *
- * Each node occupies 16 floats (64 bytes), matching the WGSL struct layout:
- *
- *   0–2  representative.position (vec3<f32>)
- *   3    totalIntensity          (f32)
- *   4–6  representative.color    (vec3<f32>)
- *   7    lightCount              (f32)
- *   8–10 aabb.min                (vec3<f32>)
- *   11   leftChildIndex          (f32, −1 = leaf)
- *   12–14 aabb.max               (vec3<f32>)
- *   15   rightChildIndex         (f32, −1 = leaf)
- */
+// Flatten tree for GPU (16 floats per node)
 export function flattenTreeForGPU(root: LightcutNode | null): { data: Float32Array; nodeCount: number } {
-    if (!root) return { data: new Float32Array(FLOATS_PER_GPU_NODE), nodeCount: 0 };
+    if (!root) return { data: new Float32Array(16), nodeCount: 0 };
 
     // BFS to assign contiguous indices
     const ordered: LightcutNode[] = [];
@@ -289,11 +277,11 @@ export function flattenTreeForGPU(root: LightcutNode | null): { data: Float32Arr
     }
 
     const nodeCount = ordered.length;
-    const data = new Float32Array(nodeCount * FLOATS_PER_GPU_NODE);
+    const data = new Float32Array(nodeCount * 16);
 
     for (let i = 0; i < nodeCount; i++) {
         const n = ordered[i]!;
-        const o = i * FLOATS_PER_GPU_NODE;
+        const o = i * 16;
 
         // representative position + totalIntensity
         data[o + 0] = n.representative.position[0];

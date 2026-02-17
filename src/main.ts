@@ -19,22 +19,22 @@ const TILERATIO = 128000;
 /** Default maximum cut size for per-pixel lightcuts (configurable via future slider). */
 let LIGHTCUT_SIZE = 16;
 
-// Number of lights rendered per pass in accumulation mode.
-const LIGHTS_PER_PASS = 10;
+// Number of lights rendered per pass in accumulation mode (now controlled by slider).
+// const LIGHTS_PER_PASS = 10;
 
-/** Read the current render method from the UI selector. */
+// Get current render method
 function getSelectedRenderMethod(): RenderMethod {
   const sel = document.getElementById('render_method_select') as HTMLSelectElement | null;
   return (sel ? sel.value : 'tiles') as RenderMethod;
 }
 
-/** Get the current rendering type from the dropdown. */
+// Get current rendering type
 function getRenderingType(): RenderingType {
   const sel = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
   return (sel ? sel.value : 'raytrace') as RenderingType;
 }
 
-/** Whether ray tracing is enabled (raytrace, lightcuts, or stochastic lightcuts mode). */
+// Check if ray tracing is enabled
 function isRayTracingEnabled(): boolean {
   const t = getRenderingType();
   return t === 'raytrace' || t === 'lightcuts' || t === 'stochastic_lightcuts';
@@ -50,9 +50,7 @@ interface FullLightsTrainingOptions {
   forceRayTracing?: boolean;
 }
 
-/**
- * Run full-lights training: generate numImages with camera on random north hemisphere.
- */
+// Run full-lights training: generate numImages with camera on random north hemisphere.
 async function runFullLightsTraining(
   app: GPUApp,
   scene: Scene,
@@ -85,18 +83,21 @@ async function runFullLightsTraining(
   return { times };
 }
 
-function initEvents(app: GPUApp, scene: Scene, renderCallback: () => void): void {
+function initEvents(app: GPUApp, getScene: () => Scene, renderCallback: () => void): void {
   app.canvas.addEventListener('mousedown', (e: MouseEvent) => {
+    const scene = getScene();
     scene.camera.lastX = e.clientX;
     scene.camera.lastY = e.clientY;
     if (e.button === 0) scene.camera.dragging = true;
     if (e.button === 1 || e.button === 2) scene.camera.panning = true;
   });
   window.addEventListener('mouseup', () => {
+    const scene = getScene();
     scene.camera.dragging = false;
     scene.camera.panning = false;
   });
   app.canvas.addEventListener('mousemove', (e: MouseEvent) => {
+    const scene = getScene();
     const dx = e.clientX - (scene.camera.lastX ?? 0);
     const dy = e.clientY - (scene.camera.lastY ?? 0);
     scene.camera.lastX = e.clientX;
@@ -115,6 +116,7 @@ function initEvents(app: GPUApp, scene: Scene, renderCallback: () => void): void
   });
   app.canvas.addEventListener('wheel', (e: WheelEvent) => {
     e.preventDefault();
+    const scene = getScene();
     scene.camera.radius *= 1 + e.deltaY * scene.camera.zoomSpeed;
     scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, scene.camera.radius));
     renderCallback();
@@ -127,20 +129,26 @@ async function renderScene(app: GPUApp, scene: Scene): Promise<number> {
   const method = getSelectedRenderMethod();
   const renderingType = getRenderingType();
 
-  // Guard: if lightcuts requested but no tree built, fail loudly.
-  if (renderingType === 'lightcuts') {
+
+  const fullbrightCheckbox = document.getElementById('fullbright_checkbox') as HTMLInputElement | null;
+  const isFullbright = fullbrightCheckbox ? fullbrightCheckbox.checked : false;
+
+  if (renderingType === 'lightcuts' || renderingType === 'stochastic_lightcuts') {
     if (!app.lightcutTreeBuffer || app.lightcutTreeNodeCount === 0) {
       console.error('[Lightcuts] Cannot render: no lightcut tree built/uploaded. Build one in the Lightcut Tree tab first.');
       alert('Error: Lightcuts selected but no tree built. Please build a lightcut tree first.');
       return 0;
     }
-    updateDebugUniform(app, app.lightcutTreeNodeCount, LIGHTCUT_SIZE);
+    const algorithm = renderingType === 'stochastic_lightcuts' ? 1 : 0;
+    // Disable fullbright for RT modes as requested ("raster mode ONLY")
+    updateDebugUniform(app, app.lightcutTreeNodeCount, LIGHTCUT_SIZE, algorithm, false);
   } else {
-    updateDebugUniform(app, 0, 0);
+    // Disable for normal RT too
+    updateDebugUniform(app, 0, 0, 0, false);
   }
 
   if (!useRayTracing) {
-    return renderSceneRaster(app, scene);
+    return renderSceneRaster(app, scene, isFullbright);
   }
 
   if (method === 'accumulation') {
@@ -152,11 +160,12 @@ async function renderScene(app: GPUApp, scene: Scene): Promise<number> {
   }
 }
 
-/** Rasterization path. */
-async function renderSceneRaster(app: GPUApp, scene: Scene): Promise<number> {
+// Rasterization path
+async function renderSceneRaster(app: GPUApp, scene: Scene, isFullbright: boolean): Promise<number> {
   const start = performance.now();
   updateUniforms(app, scene);
-  updateDebugUniform(app);
+  // Explicitly update debug uniform for raster mode
+  updateDebugUniform(app, 0, 0, 0, isFullbright);
   updateMaterialBuffer(app, scene.materials);
   updateLightSourceBuffer(app, scene.lightSources);
   const encoder = app.device.createCommandEncoder();
@@ -190,7 +199,7 @@ async function renderSceneRaster(app: GPUApp, scene: Scene): Promise<number> {
   return frameMs;
 }
 
-/** One-shot RT: render the full screen in a single dispatch. */
+// One-shot RT
 async function renderSceneOneShot(app: GPUApp, scene: Scene): Promise<number> {
   const start = performance.now();
   const rtType = getRenderingType();
@@ -253,7 +262,7 @@ async function renderSceneOneShot(app: GPUApp, scene: Scene): Promise<number> {
   return frameMs;
 }
 
-/** Tiled RT: split canvas into tiles, render each sequentially. */
+// Tiled RT
 async function renderSceneTiles(app: GPUApp, scene: Scene): Promise<number> {
   const start = performance.now();
   const rtType = getRenderingType();
@@ -268,7 +277,7 @@ async function renderSceneTiles(app: GPUApp, scene: Scene): Promise<number> {
   const desiredTileSize = TILERATIO / numLights;
   const baseTileSize = Number.isFinite(desiredTileSize) && desiredTileSize > 0
     ? desiredTileSize
-    : ((scene.cameraConfig && typeof scene.cameraConfig.tileSize === 'number') ? scene.cameraConfig.tileSize : 256);
+    : ((scene.params && typeof scene.params.tileSize === 'number') ? scene.params.tileSize : 256);
   const tileSize = Math.max(32, Math.min(256, Math.round(baseTileSize)));
   const tilesX = Math.ceil(app.canvas.width / tileSize);
   const tilesY = Math.ceil(app.canvas.height / tileSize);
@@ -378,17 +387,33 @@ async function renderSceneTiles(app: GPUApp, scene: Scene): Promise<number> {
   return frameMs;
 }
 
-/**
- * Accumulation RT: render multiple passes, each with K lights, accumulate additively,
- * then final-blit with 1/N division.
- */
+// Accumulation RT
 async function renderSceneAccumulation(app: GPUApp, scene: Scene): Promise<number> {
   const start = performance.now();
   const rtType = getRenderingType();
   const modeLabel = rtType === 'lightcuts' ? 'Lightcuts' : 'RT';
   const totalLights = scene.lightSources?.length ?? 0;
-  const numPasses = Math.max(1, Math.ceil(totalLights / LIGHTS_PER_PASS));
-  console.log(`[Render] Starting accumulation ${modeLabel}:`, totalLights, 'lights,', numPasses, 'passes of', LIGHTS_PER_PASS);
+
+  const accumSlider = document.getElementById('accumulation_slider') as HTMLInputElement | null;
+  const accumCount = accumSlider ? parseInt(accumSlider.value, 10) : 4;
+
+  let numPasses = 1;
+  let lightsPerCurrentPass = totalLights;
+
+  if (rtType === 'stochastic_lightcuts') {
+    numPasses = accumCount;
+    // For stochastic, we use all lights every pass (but sampled via tree)
+    lightsPerCurrentPass = totalLights;
+  } else if (rtType === 'lightcuts') {
+    numPasses = 1;
+    lightsPerCurrentPass = totalLights;
+  } else {
+    // Standard RT: split lights across passes
+    numPasses = accumCount;
+    lightsPerCurrentPass = Math.ceil(totalLights / Math.max(1, numPasses));
+  }
+
+  console.log(`[Render] Starting accumulation ${modeLabel}:`, totalLights, 'lights,', numPasses, 'passes', 'lights/pass:', lightsPerCurrentPass);
 
   updateUniforms(app, scene);
   // updateDebugUniform(app); // Already set in renderScene
@@ -417,10 +442,24 @@ async function renderSceneAccumulation(app: GPUApp, scene: Scene): Promise<numbe
   }
 
   for (let p = 0; p < numPasses; p++) {
-    const lightStart = p * LIGHTS_PER_PASS;
-    const lightEnd = Math.min(lightStart + LIGHTS_PER_PASS, totalLights);
+    // For standard RT, we slice the light array.
+    // For stochastic, we just iterate 'p' for temporal accumulation, using all lights.
+    let lightStart = 0;
+    let lightEnd = totalLights;
 
-    updateLightRange(app, lightStart, lightEnd);
+    if (rtType !== 'stochastic_lightcuts' && rtType !== 'lightcuts') {
+      lightStart = p * lightsPerCurrentPass;
+      lightEnd = Math.min(lightStart + lightsPerCurrentPass, totalLights);
+    }
+
+    if (rtType === 'stochastic_lightcuts') {
+      // Increment time/frame count for different noise seed each pass
+      scene.time = (scene.time || 0) + 1;
+      // We must update the uniform buffer to push the new time
+      updateUniforms(app, scene);
+    } else {
+      updateLightRange(app, lightStart, lightEnd);
+    }
 
     // Render full screen to offscreen texture
     {
@@ -546,7 +585,7 @@ async function main(): Promise<void> {
       }
     }
 
-    initEvents(app, scene, triggerRender);
+    initEvents(app, () => scene, triggerRender);
     initGPUBuffers(app, scene);
     console.log('[Main] GPU buffers initialized');
 
@@ -572,6 +611,33 @@ async function main(): Promise<void> {
     }
     if (renderingTypeSelect) {
       renderingTypeSelect.addEventListener('change', onRenderingTypeChange);
+    }
+
+    const fullbrightCheckbox = document.getElementById('fullbright_checkbox') as HTMLInputElement | null;
+    if (fullbrightCheckbox) {
+      fullbrightCheckbox.addEventListener('change', async () => {
+        const useRT = isRayTracingEnabled();
+        if (useRT) {
+          if (!isRendering) {
+            isRendering = true;
+            await renderScene(app, scene);
+            isRendering = false;
+          }
+        } else {
+          triggerRender();
+        }
+      });
+    }
+
+    // Accumulation slider
+    const accumSlider = document.getElementById('accumulation_slider') as HTMLInputElement | null;
+    const accumValue = document.getElementById('accumulation_value');
+    if (accumSlider && accumValue) {
+      accumSlider.addEventListener('input', () => {
+        accumValue.textContent = accumSlider.value;
+      });
+      // Initialize value
+      accumValue.textContent = accumSlider.value;
     }
     if (!isRayTracingEnabled()) {
       renderLoop();
@@ -646,10 +712,7 @@ async function main(): Promise<void> {
     // ─── Lightcut Tree tab ─────────────────────────────────────────────────
     // ─── Lightcut Tree tab ─────────────────────────────────────────────────
 
-    /**
-     * Lightweight GPU context for the lightcut visualization canvas.
-     * Shares {device, shaderModule, bindGroupLayout, rasterizationPipeline} with the main GPUApp.
-     */
+    // Lightweight GPU context for the lightcut visualization canvas.
     interface LightcutGPUCtx {
       canvas: HTMLCanvasElement;
       device: GPUDevice;
@@ -700,7 +763,7 @@ async function main(): Promise<void> {
       return lightcutGPU;
     }
 
-    /** Build a scene variant with solid bounding boxes for the lightcut viz. */
+    // Build a scene variant with solid bounding boxes use for visualization
     function buildLightcutScene(baseScene: Scene, nodes: LightcutNode[]): Scene {
       const vizScene: Scene = {
         camera: baseScene.camera,
@@ -752,7 +815,11 @@ async function main(): Promise<void> {
         vizScene.materials.push(mat);
       }
 
-      const boxMeshes = createBBoxMeshes(nodes, baseMaterialIndex);
+      const margin = (baseScene.params && typeof baseScene.params.lightcutVizRadius === 'number')
+        ? baseScene.params.lightcutVizRadius
+        : 0.02; // Fallback to default if not specified
+
+      const boxMeshes = createBBoxMeshes(nodes, baseMaterialIndex, margin);
       for (const mesh of boxMeshes) {
         vizScene.meshes.push(mesh);
       }
@@ -760,7 +827,7 @@ async function main(): Promise<void> {
       return vizScene;
     }
 
-    /** Render the lightcut visualization on the dedicated canvas. */
+    // Render the lightcut visualization
     async function renderLightcutViz(depth: number): Promise<void> {
       if (!lightcutTree) {
         console.warn('[Lightcut] No tree built yet');

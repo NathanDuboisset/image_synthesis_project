@@ -1,0 +1,11 @@
+
+radiusScale=0.4
+tileSize=128
+
+defaultLightPos=350,500,-200
+lightcutVizRadius=50.0
+defaultLightColor=1,0.95,0.9
+defaultLightIntensity=500000.0
+
+do_virtual=true
+virtual_dir_div=5

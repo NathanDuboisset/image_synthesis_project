@@ -39,6 +39,10 @@
         </select>
       </div>
       <div class="sidebar-section">
+        <label for="fullbright_checkbox">Fullbright:</label>
+        <input type="checkbox" id="fullbright_checkbox">
+      </div>
+      <div class="sidebar-section">
         <label for="rendering_type_select">Rendering:</label>
         <select id="rendering_type_select">
           <option value="raster" selected>Raster</option>
@@ -46,6 +50,11 @@
           <option value="lightcuts">Lightcuts</option>
           <option value="stochastic_lightcuts">Stochastic Lightcuts</option>
         </select>
+      </div>
+      <div class="sidebar-section">
+        <label for="accumulation_slider">Accumulation:</label>
+        <input type="range" id="accumulation_slider" min="4" max="64" value="4">
+        <span id="accumulation_value">4</span>
       </div>
       <div class="sidebar-section">
         <button type="button" id="render_button">Generate image</button>

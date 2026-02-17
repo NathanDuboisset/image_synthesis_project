@@ -1,14 +1,11 @@
 /// <reference types="@webgpu/types" />
 
-// ─── Primitives ─────────────────────────────────────────────────────────────
+// Primitives
 
-/** 3-component vector stored as a tuple. */
 export type Vec3 = [number, number, number];
-
-/** 4×4 column-major matrix stored in a Float32Array(16). */
 export type Mat4 = Float32Array;
 
-// ─── Materials & Lights ─────────────────────────────────────────────────────
+
 
 export interface Material {
     albedo: Vec3;
@@ -23,9 +20,11 @@ export interface LightSource {
     spot: Vec3;
     angle: number;
     useRaytracedShadows: boolean;
+    fixedIntensity?: boolean;
+    visibleInRT?: boolean;
 }
 
-// ─── Geometry ───────────────────────────────────────────────────────────────
+
 
 export interface Mesh {
     positions: Float32Array;
@@ -34,7 +33,7 @@ export interface Mesh {
     materialIndex?: number;
 }
 
-// ─── Camera ─────────────────────────────────────────────────────────────────
+
 
 export interface Camera {
     viewMat: Mat4;
@@ -56,20 +55,16 @@ export interface Camera {
     zoomSpeed: number;
     minRadius: number;
     maxRadius: number;
-    // Mouse interaction state (set at runtime)
+    // Interaction
     lastX?: number;
     lastY?: number;
     dragging?: boolean;
     panning?: boolean;
-    /** Lightcut-canvas dragging flag (set dynamically in main.ts). */
     _lcDragging?: boolean;
-    /** Lightcut-canvas panning flag (set dynamically in main.ts). */
     _lcPanning?: boolean;
 }
 
-// ─── Camera Config (from camera.txt) ────────────────────────────────────────
-
-export interface CameraConfig {
+export interface SceneParams {
     radiusScale?: number;
     radius?: number;
     yaw?: number;
@@ -78,10 +73,17 @@ export interface CameraConfig {
     targetY?: number;
     targetZ?: number;
     tileSize?: number;
-    [key: string]: number | string | undefined;
+    // New params
+    defaultLightPos?: string; // "x,y,z"
+    defaultLightColor?: string; // "r,g,b"
+    defaultLightIntensity?: number;
+    do_virtual?: boolean;
+    virtual_dir_div?: number;
+    lightcutVizRadius?: number;
+    [key: string]: number | string | boolean | undefined;
 }
 
-// ─── Scene ──────────────────────────────────────────────────────────────────
+
 
 export interface SceneBounds {
     minX: number; minY: number; minZ: number;
@@ -94,12 +96,12 @@ export interface Scene {
     materials: Material[];
     lightSources: LightSource[];
     baseMeshCount?: number;
-    cameraConfig?: CameraConfig | null;
+    params?: SceneParams | null;
     debugLightMeshStart?: number;
     time?: number;
 }
 
-// ─── GPU ────────────────────────────────────────────────────────────────────
+
 
 export interface MeshBuffers {
     positionBuffer: GPUBuffer;
@@ -160,7 +162,7 @@ export interface GPUApp {
     lightcutTreeNodeCount: number;
 }
 
-// ─── Lightcut Tree ──────────────────────────────────────────────────────────
+
 
 export interface AABB {
     min: Vec3;
@@ -184,12 +186,12 @@ export interface LightcutNode {
     lightIndex: number;
 }
 
-// ─── Render method unions ───────────────────────────────────────────────────
+
 
 export type RenderMethod = 'tiles' | 'oneshot' | 'accumulation';
 export type RenderingType = 'raster' | 'raytrace' | 'lightcuts' | 'stochastic_lightcuts';
 
-// ─── OBJ Loader ─────────────────────────────────────────────────────────────
+
 
 export interface ParsedOBJ {
     positions: number[];
@@ -202,7 +204,7 @@ export interface OBJSceneResult {
     lights: Vec3[];
 }
 
-// ─── Material with name (internal to scene loader) ──────────────────────────
+
 
 export interface NamedMaterial extends Material {
     name: string;

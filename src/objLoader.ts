@@ -1,23 +1,17 @@
-import type { Vec3, Mesh, ParsedOBJ, OBJSceneResult } from './types.ts';
+import type { Vec3, Mesh, ParsedOBJ, OBJSceneResult, NamedMaterial } from './types.ts';
 import { computeNormals } from './mesh.ts';
 
-/**
- * Minimal OBJ parser.
- * Supports:
- *   - v x y z
- *   - f i j k ...  (triangulated with a simple fan if n > 3)
- *   - usemtl <name> (used to detect light faces)
- * Ignores texture coordinates and normals.
- */
-function parseOBJ(text: string): ParsedOBJ {
+// Minimal OBJ parser.
+// Supports: v, f, usemtl
+export function parseOBJ(text: string): { positions: number[]; indicesByMaterial: Map<string, number[]>; lightPositions: Vec3[] } {
   const positions: number[] = [];
-  const indices: number[] = [];
+  const indicesByMaterial = new Map<string, number[]>();
   const lightPositions: Vec3[] = [];
 
   // Store positions 1-based to make OBJ indexing (1-based, with possible negatives) easier.
   const tempPositions: (Vec3 | null)[] = [null];
 
-  let currentMaterial = '';
+  let currentMaterial = 'default';
 
   const lines = text.split(/\r?\n/);
   for (let line of lines) {
@@ -34,7 +28,7 @@ function parseOBJ(text: string): ParsedOBJ {
       const z = Number(parts[3]);
       tempPositions.push([x, y, z]);
     } else if (keyword === 'usemtl') {
-      currentMaterial = parts[1] || '';
+      currentMaterial = parts[1] || 'default';
     } else if (keyword === 'f') {
       if (parts.length < 4) continue;
       const faceIndices: number[] = [];
@@ -48,12 +42,19 @@ function parseOBJ(text: string): ParsedOBJ {
         faceIndices.push(idx);
       }
       if (faceIndices.length < 3) continue;
+
+      let targetIndices = indicesByMaterial.get(currentMaterial);
+      if (!targetIndices) {
+        targetIndices = [];
+        indicesByMaterial.set(currentMaterial, targetIndices);
+      }
+
       // Triangulate polygon into a fan
       for (let i = 1; i < faceIndices.length - 1; i++) {
         const i0 = faceIndices[0]!;
         const i1 = faceIndices[i]!;
         const i2 = faceIndices[i + 1]!;
-        indices.push(
+        targetIndices.push(
           i0 - 1,
           i1 - 1,
           i2 - 1,
@@ -80,13 +81,10 @@ function parseOBJ(text: string): ParsedOBJ {
     positions.push(p[0], p[1], p[2]);
   }
 
-  return { positions, indices, lightPositions };
+  return { positions, indicesByMaterial, lightPositions };
 }
 
-/**
- * For certain scenes (currently 'ram') we want to compress
- * light triangles into a single representative point per quad.
- */
+// Compress light triangles into a single point for "ram" scene
 function compressSceneLights(sceneName: string, lightPositions: Vec3[]): Vec3[] {
   if (sceneName === 'ram' && lightPositions.length > 0) {
     const compressed: Vec3[] = [];
@@ -105,13 +103,8 @@ function compressSceneLights(sceneName: string, lightPositions: Vec3[]): Vec3[] 
   return lightPositions;
 }
 
-/**
- * Load a scene from an OBJ file located at:
- *   data/scenes/<sceneName>/<sceneName>.obj
- *
- * Returns meshes and light positions.
- */
-export async function loadOBJScene(sceneName: string, materialIndex: number = 0): Promise<OBJSceneResult> {
+// Load OBJ file
+export async function loadOBJScene(sceneName: string, materials: NamedMaterial[] = []): Promise<OBJSceneResult> {
   const url = `data/scenes/${sceneName}/${sceneName}.obj`;
   console.log('[OBJ] Loading scene from', url);
 
@@ -121,41 +114,88 @@ export async function loadOBJScene(sceneName: string, materialIndex: number = 0)
   }
 
   const text = await res.text();
-  let { positions, indices, lightPositions } = parseOBJ(text);
+  let { positions, indicesByMaterial, lightPositions } = parseOBJ(text);
 
   // Compress lights for scenes that need it (e.g. RAM quads -> 1 light).
   lightPositions = compressSceneLights(sceneName, lightPositions);
 
-  if (!positions.length || !indices.length) {
-    console.warn('[OBJ] Parsed empty geometry for scene', sceneName);
+  const meshes: Mesh[] = [];
+
+  if (indicesByMaterial.size === 0) {
+    console.warn('[OBJ] Parsed empty geometry (no faces) for scene', sceneName);
   } else {
+    // We need to create separate meshes for each material subset
+    // Since positions are shared, we can either duplicate positions for each mesh (simple)
+    // or try to keep them shared (but Mesh struct implies separate buffers).
+    // Let's duplicate positions for now to be safe and simple, optimization later.
+
+    for (const [matName, matIndices] of indicesByMaterial.entries()) {
+      if (matIndices.length === 0) continue;
+
+      // Find material index
+      let materialIndex = 0;
+      const foundMatIndex = materials.findIndex(m => m.name === matName);
+      if (foundMatIndex >= 0) {
+        materialIndex = foundMatIndex;
+      } else {
+        // Fallback or default
+        // If "default", maybe index 0?
+        // If unknown, maybe index 0?
+        // Try to match 'Default' if not found
+        const defIdx = materials.findIndex(m => m.name === 'Default');
+        if (defIdx >= 0) materialIndex = defIdx;
+      }
+
+      // Re-map indices to be 0-based relative to the subset of vertices?
+      // Actually, standard engines re-index vertices to be compact.
+      // But here we can just dump all positions and use the original indices if we want,
+      // BUT `Mesh` expects `positions` and `indices`. If we use ALL positions for EVERY mesh,
+      // it's wasteful but correct.
+      // Let's try attempting to implement a compaction if it's not too complex.
+      // Compaction is cleaner.
+
+      const subPositions: number[] = [];
+      const subIndices: number[] = [];
+      const indexMap = new Map<number, number>(); // old index -> new index
+
+      for (const oldIdx of matIndices) {
+        let newIdx = indexMap.get(oldIdx);
+        if (newIdx === undefined) {
+          newIdx = subPositions.length / 3;
+          indexMap.set(oldIdx, newIdx);
+          subPositions.push(
+            positions[3 * oldIdx]!,
+            positions[3 * oldIdx + 1]!,
+            positions[3 * oldIdx + 2]!
+          );
+        }
+        subIndices.push(newIdx);
+      }
+
+      const mesh: Mesh = {
+        positions: new Float32Array(subPositions),
+        normals: new Float32Array(subPositions.length),
+        indices: new Uint32Array(subIndices),
+        materialIndex,
+      };
+
+      computeNormals(mesh);
+      meshes.push(mesh);
+    }
+
     console.log(
       '[OBJ] Parsed scene',
       sceneName,
-      'vertices =', positions.length / 3,
-      'triangles =', indices.length / 3,
+      'meshes =', meshes.length,
+      'total triangles =', Array.from(indicesByMaterial.values()).reduce((a, b) => a + b.length, 0) / 3,
       'lightTriangles =', lightPositions.length,
     );
   }
 
-  const mesh: Mesh = {
-    positions: new Float32Array(positions),
-    normals: new Float32Array(positions.length),
-    indices: new Uint32Array(indices),
-    materialIndex,
-  };
-
-  computeNormals(mesh);
-  return { meshes: [mesh], lights: lightPositions };
+  return { meshes, lights: lightPositions };
 }
 
-/**
- * Load lights from a separate OBJ file, typically:
- *   data/scenes/<sceneName>/lights.obj
- *
- * The OBJ should contain geometry using `usemtl RamLight` for light quads.
- * We parse only the light triangle centers and ignore geometry.
- */
+// Load separate lights OBJ if valid
 export async function loadOBJLights(sceneName: string, lightObjName: string = 'lights'): Promise<Vec3[]> {
   const url = `data/scenes/${sceneName}/${lightObjName}.obj`;
   console.log('[OBJ] Loading separate lights from', url);

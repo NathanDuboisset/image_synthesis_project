@@ -1,9 +1,5 @@
-// Utility to generate a grid "panel" of emissive faces over a rectangular area
-// and write them as an OBJ snippet under the scene folder
-// Usage (Node.js only, not in browser):
-//   node js/addLightsPanel.js <sceneName> <textureName> <lightsPerSide> <height> <minX> <maxX> <minY> <maxY>
-// Example (ram, 20 per side, height 1.4, X/Z -1.5 to 1.5):
-//   node js/addLightsPanel.js ram RamLight 20 1.4 -1.5 1.5 -1.5 1.5
+// Utility to create a light panel OBJ
+// Usage: node js/addLightsPanel.js <sceneName> <textureName> <lightsPerSide> <height> <minX> <maxX> <minY> <maxY>
 
 import fs from 'fs';
 import path from 'path';

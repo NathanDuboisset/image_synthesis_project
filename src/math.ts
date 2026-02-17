@@ -1,4 +1,4 @@
-// Minimal 4×4 Matrix implementation for Model-View-Projection
+// Minimal 4x4 Matrix for MVP
 import type { Vec3, Mat4 } from './types.ts';
 
 export function mat4Identity(): Mat4 {

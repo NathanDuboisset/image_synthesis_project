@@ -87,7 +87,7 @@ export function createSphere(radius: number, latitudeRes: number, longitudeRes: 
   };
 }
 
-/** Build mesh from ram-mesh.json data (positions + indices). */
+// Build mesh from JSON data
 export function createRamFromData(data: { positions: number[]; indices: number[] }): Mesh {
   const mesh: Mesh = {
     positions: new Float32Array(data.positions),

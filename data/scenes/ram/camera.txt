@@ -1,9 +1,0 @@
-# Multiply auto-computed orbit radius (smaller = closer). Default 1.0.
-radiusScale=0.4
-
-# Ray tracing tile size (pixels). Smaller = more tiles = less TDR/device hang. 32–256, default 256.
-tileSize=128
-
-# Optional: absolute radius, yaw, pitch (radians), targetX/Y/Z
-# yaw=0
-# pitch=0.2

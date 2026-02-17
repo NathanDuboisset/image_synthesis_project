@@ -79,9 +79,13 @@ export function fillLightSourceStagingBuffer(app: GPUApp, lightSources: LightSou
     const l = lightSources[i]!;
     const offset = i * sizeOfLightSource;
 
-    // For Raster, use a higher baseline intensity (original raw value equivalent or 1.0).
-    // RT modes use the normalized intensity computed in createScene.
-    const intensity = useRT ? l.intensity : 0.05;
+    // Use the actual intensity from the scene configuration for all modes
+    // previously it was clamped to 0.05 for raster, which prevented high-intensity lights from working
+    let intensity = l.intensity;
+    // If running RT and this light is flagged to be hidden in RT, Zero its intensity
+    if (useRT && l.visibleInRT === false) {
+      intensity = 0.0;
+    }
 
     app.lightSourceStagingBuffer.set(l.position, offset);
     app.lightSourceStagingBuffer[offset + 3] = intensity;
@@ -111,7 +115,7 @@ export function initGPUBuffers(app: GPUApp, scene: Scene): void {
   app.uniformBuffer = createGPUBuffer(app.device, app.uniformData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   app.debugUniformBuffer = createGPUBuffer(app.device, app.debugUniformData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
 
-  // Dummy lightcut tree buffer (1 node = 64 bytes) — replaced when a tree is built
+  // Placeholder buffer for lightcut tree
   app.lightcutTreeBuffer = createGPUBuffer(app.device, new Float32Array(16), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   app.lightcutTreeNodeCount = 0;
 
@@ -198,9 +202,7 @@ export function initRenderPipeline(app: GPUApp, shaderCode: string): void {
   console.log('[GPU] Pipelines and depth texture created');
 }
 
-/**
- * Create accumulation-specific GPU resources (call once after initRenderPipeline).
- */
+// Create accumulation textures and pipelines
 export function initAccumulationResources(app: GPUApp): void {
   const w = app.canvas.width, h = app.canvas.height;
 
@@ -212,7 +214,7 @@ export function initAccumulationResources(app: GPUApp): void {
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
   });
 
-  // --- Accumulation additive blit: offscreen → accum (blend ONE+ONE) ---
+  // Additive blending for accumulation pass
   const accumBlitBGL = app.device.createBindGroupLayout({
     entries: [
       { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
@@ -245,7 +247,7 @@ export function initAccumulationResources(app: GPUApp): void {
     ],
   });
 
-  // --- Final blit: accum → swap chain (divide by passCount) ---
+  // Final pass: averaging accumulator
   const accumFinalBGL = app.device.createBindGroupLayout({
     entries: [
       { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
@@ -265,7 +267,7 @@ export function initAccumulationResources(app: GPUApp): void {
     primitive: { topology: 'triangle-list' },
   });
 
-  // Uniform for invPassCount (16 bytes for alignment: 1 float + 3 padding)
+  // Uniform for 1/passCount
   app.accumFinalUniformData = new Float32Array(8);
   app.accumFinalUniformBuffer = app.device.createBuffer({
     size: 32,
@@ -284,9 +286,6 @@ export function initAccumulationResources(app: GPUApp): void {
   console.log('[GPU] Accumulation resources created');
 }
 
-/**
- * Write invPassCount to the accumulation final uniform buffer.
- */
 export function updateAccumFinalPassCount(app: GPUApp, passCount: number): void {
   app.accumFinalUniformData[0] = 1.0 / Math.max(1, passCount);
   app.device.queue.writeBuffer(app.accumFinalUniformBuffer, 0, app.accumFinalUniformData as unknown as BufferSource);
@@ -337,42 +336,33 @@ export function updateUniforms(app: GPUApp, scene: Scene): void {
   const meshCount = typeof scene.baseMeshCount === 'number' ? scene.baseMeshCount : scene.meshes.length;
   app.uniformData[84] = meshCount;
   app.uniformData[85] = scene.lightSources.length;
-  // Default: shade ALL lights (0..numLights). Accumulation overrides these per pass.
-  app.uniformData[86] = 0;                          // lightStartIndex
-  app.uniformData[87] = scene.lightSources.length;   // lightEndIndex
+  // Default: shade all lights
+  app.uniformData[86] = 0;
+  app.uniformData[87] = scene.lightSources.length;
   app.uniformData[88] = app.canvas.width;             // screenWidth
   app.uniformData[89] = app.canvas.height;            // screenHeight
+  app.uniformData[90] = scene.time ?? 0;              // frameCount
   app.device.queue.writeBuffer(app.uniformBuffer, 0, app.uniformData.buffer, app.uniformData.byteOffset, app.uniformData.byteLength);
 }
 
-/**
- * Override the light range in the uniform buffer (for accumulation passes).
- */
 export function updateLightRange(app: GPUApp, startIndex: number, endIndex: number): void {
   app.uniformData[86] = startIndex;
   app.uniformData[87] = endIndex;
-  // Write just the relevant portion (offset 86*4 = 344 bytes, 2 floats = 8 bytes)
+  // Update only the relevant part of the buffer
   app.device.queue.writeBuffer(app.uniformBuffer, 86 * 4, app.uniformData.buffer, app.uniformData.byteOffset + 86 * 4, 8);
 }
 
-/**
- * Write debug/lightcut params to the debug uniform buffer.
- *   [0] = debugMode        (0 = normal PBR)
- *   [1] = lightcutNodeCount (0 = lightcuts disabled)
- *   [2] = maxCutSize        (max lightcut representatives per pixel)
- */
-export function updateDebugUniform(app: GPUApp, lightcutNodeCount: number = 0, maxCutSize: number = 0): void {
-  app.debugUniformData[0] = 0;                  // debugMode: normal PBR
-  app.debugUniformData[1] = lightcutNodeCount;   // 0 means disabled
+// Update debug parameters
+export function updateDebugUniform(app: GPUApp, lightcutNodeCount: number = 0, maxCutSize: number = 0, algorithm: number = 0, fullbright: boolean = false): void {
+  app.debugUniformData[0] = 0;
+  app.debugUniformData[1] = lightcutNodeCount;
   app.debugUniformData[2] = maxCutSize;
+  app.debugUniformData[3] = algorithm;
+  app.debugUniformData[4] = fullbright ? 1 : 0;
   app.device.queue.writeBuffer(app.debugUniformBuffer, 0, app.debugUniformData as unknown as BufferSource);
 }
 
-/**
- * Upload a new lightcut tree buffer and rebuild the bind group.
- * @param treeData   Flat Float32Array from flattenTreeForGPU().
- * @param nodeCount  Number of nodes in the tree.
- */
+// Upload tree buffer
 export function uploadLightcutTree(app: GPUApp, treeData: Float32Array, nodeCount: number): void {
   // Destroy old buffer if any
   if (app.lightcutTreeBuffer) app.lightcutTreeBuffer.destroy();
@@ -380,7 +370,7 @@ export function uploadLightcutTree(app: GPUApp, treeData: Float32Array, nodeCoun
   app.lightcutTreeBuffer = createGPUBuffer(app.device, treeData, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   app.lightcutTreeNodeCount = nodeCount;
 
-  // Rebuild bind group with the new tree buffer
+  // Rebind
   app.bindGroup = app.device.createBindGroup({
     layout: app.bindGroupLayout,
     entries: [

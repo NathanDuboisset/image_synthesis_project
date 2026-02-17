@@ -1,10 +1,10 @@
-import type { Vec3, Scene, Material, Mesh, LightSource, CameraConfig, SceneBounds, NamedMaterial } from './types.ts';
+import type { Vec3, Scene, Material, Mesh, LightSource, SceneParams, SceneBounds, NamedMaterial } from './types.ts';
 import { createCamera } from './camera.ts';
 import { loadOBJScene, loadOBJLights } from './objLoader.ts';
 
-// Scene names: 'ram' | 'sponza' | 'conference' (must match data/scenes/<name>)
+// Scene names: 'ram' | 'sponza' | 'conference'
 
-async function loadMaterialsFromMTL(sceneName: string): Promise<Material[]> {
+async function loadMaterialsFromMTL(sceneName: string): Promise<NamedMaterial[]> {
   const url = `data/scenes/${sceneName}/${sceneName}.mtl`;
   console.log('[Scene] Loading materials from', url);
   try {
@@ -23,7 +23,7 @@ async function loadMaterialsFromMTL(sceneName: string): Promise<Material[]> {
       const kw = parts[0];
       if (kw === 'newmtl') {
         const name = parts[1] || '';
-        // Treat materials whose name ends with "Light" as emitter-only; skip them here.
+        // Emitters have "Light" in the name; skip them here
         current = {
           name,
           albedo: [0.8, 0.8, 0.8],
@@ -53,16 +53,12 @@ async function loadMaterialsFromMTL(sceneName: string): Promise<Material[]> {
       });
     }
 
-    const materials: Material[] = materialsWithNames.map(m => ({
-      albedo: m.albedo,
-      roughness: m.roughness,
-      metalness: m.metalness,
-    }));
     console.log('[Scene] Parsed MTL materials:', materialsWithNames);
-    return materials;
+    return materialsWithNames;
   } catch (err) {
     console.error('[Scene] Failed to load MTL materials, using fallback.', err);
     return [{
+      name: 'Default',
       albedo: [0.8, 0.8, 0.8],
       roughness: 0.5,
       metalness: 0.0,
@@ -136,13 +132,53 @@ function fitCameraToScene(scene: Scene): void {
   scene.camera.far = Math.max(radius * 10.0, scene.camera.near * 10.0);
 }
 
-async function loadCameraConfig(sceneName: string): Promise<CameraConfig | null> {
+async function loadSceneParams(sceneName: string): Promise<SceneParams | null> {
+  const url = `data/scenes/${sceneName}/params.txt`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      // Fallback to camera.txt
+      return await loadCameraConfig(sceneName);
+    }
+    const text = await res.text();
+    const config: SceneParams = {};
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq <= 0) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const value = trimmed.slice(eq + 1).trim();
+
+      if (key === 'defaultLightPos' || key === 'defaultLightColor') {
+        config[key] = value;
+      } else if (key === 'do_virtual') {
+        config[key] = (value.toLowerCase() === 'true' || value === '1');
+      } else if (key === 'virtual_dir_div') {
+        const num = Number(value);
+        config[key] = Number.isNaN(num) ? 100 : num;
+      } else if (key === 'lightcutVizRadius') {
+        const num = Number(value);
+        config[key] = Number.isNaN(num) ? 0.02 : num;
+      } else {
+        const num = Number(value);
+        config[key] = Number.isNaN(num) ? value : num;
+      }
+    }
+    if (Object.keys(config).length === 0) return null;
+    return config;
+  } catch {
+    return null;
+  }
+}
+
+async function loadCameraConfig(sceneName: string): Promise<SceneParams | null> {
   const url = `data/scenes/${sceneName}/camera.txt`;
   try {
     const res = await fetch(url);
     if (!res.ok) return null;
     const text = await res.text();
-    const config: CameraConfig = {};
+    const config: SceneParams = {};
     for (const line of text.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) continue;
@@ -160,7 +196,7 @@ async function loadCameraConfig(sceneName: string): Promise<CameraConfig | null>
   }
 }
 
-function applyCameraConfig(scene: Scene, config: CameraConfig): void {
+function applyCameraConfig(scene: Scene, config: SceneParams): void {
   if (config.radiusScale != null) {
     scene.camera.radius *= config.radiusScale;
     scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, scene.camera.radius));
@@ -176,7 +212,7 @@ function applyCameraConfig(scene: Scene, config: CameraConfig): void {
 }
 
 function applyCameraConfigRadius(scene: Scene): void {
-  const config = scene.cameraConfig;
+  const config = scene.params;
   if (!config) return;
   if (config.radiusScale != null) {
     scene.camera.radius *= config.radiusScale;
@@ -357,22 +393,51 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
     lightSources: [],
   };
 
-  // Load materials directly from the scene's MTL file.
-  scene.materials = await loadMaterialsFromMTL(sceneName);
+  // Load params.txt (replacing camera.txt, but keeping fallback?)
+  // Actually, let's look for params.txt first.
+  const params = await loadSceneParams(sceneName);
+  scene.params = params;
 
-  // Load OBJ scene placed under data/scenes/<sceneName>.
-  const materialIndex = Math.max(scene.materials.length - 1, 0);
-  const objData = await loadOBJScene(sceneName, materialIndex);
+  if (params) {
+    if (params.defaultLightPos) {
+      console.log('[Scene] Using default light from params');
+      const posParts = params.defaultLightPos.split(',').map(Number);
+      const colorParts = params.defaultLightColor ? params.defaultLightColor.split(',').map(Number) : [1, 1, 1];
+      const intensity = params.defaultLightIntensity ?? 1.0;
+
+      if (posParts.length === 3) {
+        scene.lightSources.push({
+          position: [posParts[0]!, posParts[1]!, posParts[2]!],
+          intensity,
+          color: [colorParts[0] ?? 1, colorParts[1] ?? 1, colorParts[2] ?? 1],
+          spot: [0, 0, 0], // irrelevant for point lights conceptually, but let's just put origin
+          angle: -2.0, // Omni (sentinel for shader)
+          useRaytracedShadows: true,
+          fixedIntensity: true,
+          visibleInRT: params.do_virtual ?? false,
+        });
+        console.log(`[Scene] Default light added. visibleInRT: ${params.do_virtual ?? false}`);
+      }
+    }
+  }
+
+  // Load materials from MTL file
+  const namedMaterials = await loadMaterialsFromMTL(sceneName);
+  scene.materials = namedMaterials;
+
+  // Load OBJ scene
+  // We pass the named materials so the loader can match material names to indices
+  const objData = await loadOBJScene(sceneName, namedMaterials);
   const meshes = objData.meshes || [];
   let objLights = objData.lights || [];
   scene.meshes = meshes;
   scene.baseMeshCount = meshes.length;
 
-  scene.lightSources = [];
+  scene.lightSources = [...scene.lightSources];
 
   const bounds = computeMeshesBounds(scene.meshes);
 
-  // Prefer lights from a separate OBJ (data/scenes/<sceneName>/lights.obj) if present.
+  // Load separate lights OBJ if it exists
   try {
     const separateLights = await loadOBJLights(sceneName, 'lights');
     if (separateLights && separateLights.length > 0) {
@@ -383,27 +448,56 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
     console.warn('[Scene] Failed to load separate lights OBJ for scene', sceneName, err);
   }
 
-  if (sceneName === 'ram' && objLights.length > 0 && bounds) {
-    const centerX = 0.5 * (bounds.minX + bounds.maxX);
-    const centerZ = 0.5 * (bounds.minZ + bounds.maxZ);
-    const targetY = 0.5 * (bounds.minY + bounds.maxY);
-    const color: Vec3 = [1.0, 0.95, 0.9];
-    const angle = 0.5;
-    const baseIntensity = 0.05;
-    let added = 0;
-    for (const p of objLights) {
-      scene.lightSources.push({
-        position: [p[0], p[1], p[2]],
-        intensity: baseIntensity,
-        color,
-        spot: [centerX, targetY, centerZ],
-        angle,
-        useRaytracedShadows: true,
-      });
-      added++;
+  if (objLights.length > 0 && bounds) {
+    if (sceneName === 'ram') {
+      const centerX = 0.5 * (bounds.minX + bounds.maxX);
+      const centerZ = 0.5 * (bounds.minZ + bounds.maxZ);
+      const targetY = 0.5 * (bounds.minY + bounds.maxY);
+      const color: Vec3 = [1.0, 0.95, 0.9];
+      const angle = 0.5;
+      const baseIntensity = 0.05;
+      let added = 0;
+      for (const p of objLights) {
+        scene.lightSources.push({
+          position: [p[0], p[1], p[2]],
+          intensity: baseIntensity,
+          color,
+          spot: [centerX, targetY, centerZ],
+          angle,
+          useRaytracedShadows: true,
+        });
+        added++;
+      }
+      console.log('[Scene] Added RAM OBJ lights from RamLight faces:', added, 'total lights =', scene.lightSources.length);
+    } else if (scene.params && scene.params.do_virtual) {
+      console.log('[Scene] Using virtual lights from lights.obj for scene', sceneName);
+      // Replace existing lights (e.g. default light) with virtual lights
+      scene.lightSources = [];
+      const totalIntensity = scene.params.defaultLightIntensity ?? 500000.0;
+      const div = scene.params.virtual_dir_div ?? 100;
+      // If we assumed lights.obj contains 'div*div' lights, then:
+      // But maybe we just respect total intensity spread over loaded lights.
+      const perLightIntensity = totalIntensity / Math.max(1, objLights.length);
+      // Or maybe use div*div if we want each to be small?
+      // Use logic: intensity is conserved.
+
+      const colorParts = scene.params.defaultLightColor ? scene.params.defaultLightColor.split(',').map(Number) : [1, 1, 1];
+      const color: Vec3 = [colorParts[0] ?? 1, colorParts[1] ?? 1, colorParts[2] ?? 1];
+
+      for (const p of objLights) {
+        scene.lightSources.push({
+          position: p,
+          intensity: perLightIntensity,
+          color,
+          spot: [0, 0, 0],
+          angle: -2.0,
+          useRaytracedShadows: true,
+          fixedIntensity: true, // Don't normalize these again?
+        });
+      }
     }
-    console.log('[Scene] Added RAM OBJ lights from RamLight faces:', added, 'total lights =', scene.lightSources.length);
-  } else if (bounds) {
+  } else if (bounds && scene.lightSources.length === 0) {
+    // Only add fallback if no lights exist
     const center: Vec3 = [
       0.5 * (bounds.minX + bounds.maxX),
       0.5 * (bounds.minY + bounds.maxY),
@@ -420,22 +514,47 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
     });
     console.log('[Scene] Added fallback light above scene center, total lights =', scene.lightSources.length);
   }
+
   fitCameraToScene(scene);
-  const cameraConfig = await loadCameraConfig(sceneName);
-  if (cameraConfig) {
-    scene.cameraConfig = cameraConfig;
-    applyCameraConfig(scene, cameraConfig);
-    console.log('[Scene] Applied camera config from camera.txt');
-  } else {
-    scene.cameraConfig = null;
+
+  // Apply camera config from params
+  if (scene.params) {
+    applyCameraConfig(scene, scene.params);
+    console.log('[Scene] Applied camera config from params');
   }
 
-  // Normalize light intensities for energy conservation
+  // Normalize light intensities
+  // If we just loaded virtual lights, we might want to skip normalization if 'fixedIntensity' is true?
+  // Our logic sets fixedIntensity: true for virtual lights.
+
   const BASE_TOTAL_LUMINANCE = 2.0;
-  const numLights = Math.max(1, scene.lightSources.length);
-  const perLightIntensity = BASE_TOTAL_LUMINANCE / numLights;
+  // If lights are fixedIntensity, we don't normalize them.
+  let nonFixedLights = 0;
   for (const l of scene.lightSources) {
-    l.intensity = perLightIntensity;
+    if (!l.fixedIntensity) nonFixedLights++;
+  }
+
+  if (nonFixedLights > 0) {
+    // Logic for existing scenes (ram etc)
+    // But ram lights don't have fixedIntensity=true in current code?
+    // RAM code: `scene.lightSources.push({ ... })` - no fixedIntensity in original code block above.
+
+    // Let's modify normalization loop slightly to respect fixedIntensity
+    // But wait, line 494 in original file:
+    /*
+    for (const l of scene.lightSources) {
+      if (l.fixedIntensity) continue;
+      l.intensity = perLightIntensity;
+    }
+    */
+    // So it already respects fixedIntensity.
+    // We just need to make sure we don't mess up non-fixed lights.
+
+    const perLightIntensity = BASE_TOTAL_LUMINANCE / Math.max(1, scene.lightSources.length);
+    for (const l of scene.lightSources) {
+      if (l.fixedIntensity) continue;
+      l.intensity = perLightIntensity;
+    }
   }
 
   addDebugLightMeshes(scene);

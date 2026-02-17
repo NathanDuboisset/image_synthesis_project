@@ -1,0 +1,9 @@
+
+radiusScale=0.4
+
+tileSize=128
+
+defaultLightPos=0,1.3,0
+lightcutVizRadius=0.05
+defaultLightColor=1,0.95,0.9
+defaultLightIntensity=20

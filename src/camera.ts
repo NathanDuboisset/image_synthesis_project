@@ -56,7 +56,6 @@ export function createCamera(aspect: number): Camera {
     aspect,
     near: 0.1,
     far: 100,
-    // orbit parameters
     yaw: 0,
     pitch: 0,
     radius: 3,

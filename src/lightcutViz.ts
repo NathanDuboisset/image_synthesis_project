@@ -63,10 +63,11 @@ function createSolidBox(aabb: AABB, materialIndex: number, margin: number = DEFA
     };
 }
 
-export function createBBoxMeshes(nodes: LightcutNode[], baseMaterialIndex: number, margin: number = DEFAULT_MARGIN): Mesh[] {
+export function createBBoxMeshes(nodes: LightcutNode[], baseMaterialIndex: number, margin?: number): Mesh[] {
+    const usedMargin = margin !== undefined ? margin : DEFAULT_MARGIN;
     const meshes: Mesh[] = [];
     for (let i = 0; i < nodes.length; i++) {
-        meshes.push(createSolidBox(nodes[i]!.aabb, baseMaterialIndex + i, margin));
+        meshes.push(createSolidBox(nodes[i]!.aabb, baseMaterialIndex + i, usedMargin));
     }
     return meshes;
 }
