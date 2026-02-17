@@ -196,6 +196,39 @@ async function loadCameraConfig(sceneName: string): Promise<SceneParams | null> 
   }
 }
 
+async function loadVirtualLights(sceneName: string): Promise<LightSource[]> {
+  const url = `data/scenes/${sceneName}/vlights.txt`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const text = await res.text();
+    const lights: LightSource[] = [];
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const parts = trimmed.split(',').map(Number);
+      if (parts.length >= 7) {
+        // x,y,z,intensity,r,g,b
+        const [x, y, z, intensity, r, g, b] = parts;
+        lights.push({
+          position: [x!, y!, z!],
+          intensity: intensity!,
+          color: [r!, g!, b!],
+          spot: [0, 0, 0],
+          angle: -2.0,
+          useRaytracedShadows: true,
+          fixedIntensity: true
+        });
+      }
+    }
+    console.log(`[Scene] Loaded ${lights.length} virtual lights from vlights.txt`);
+    return lights;
+  } catch (e) {
+    console.warn('[Scene] Failed to load vlights.txt', e);
+    return [];
+  }
+}
+
 function applyCameraConfig(scene: Scene, config: SceneParams): void {
   if (config.radiusScale != null) {
     scene.camera.radius *= config.radiusScale;
@@ -448,7 +481,16 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
     console.warn('[Scene] Failed to load separate lights OBJ for scene', sceneName, err);
   }
 
-  if (objLights.length > 0 && bounds) {
+  // Load virtual lights if enabled, otherwise fallback
+  if (scene.params && scene.params.do_virtual) {
+    const vlights = await loadVirtualLights(sceneName);
+    if (vlights.length > 0) {
+      console.log(`[Scene] Loaded ${vlights.length} virtual lights from vlights.txt. Replacing default lights.`);
+      scene.lightSources = vlights;
+    } else {
+      console.warn('[Scene] do_virtual is true but failed to load vlights.txt (or empty).');
+    }
+  } else if (objLights.length > 0 && bounds) {
     if (sceneName === 'ram') {
       const centerX = 0.5 * (bounds.minX + bounds.maxX);
       const centerZ = 0.5 * (bounds.minZ + bounds.maxZ);
@@ -469,33 +511,8 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
         added++;
       }
       console.log('[Scene] Added RAM OBJ lights from RamLight faces:', added, 'total lights =', scene.lightSources.length);
-    } else if (scene.params && scene.params.do_virtual) {
-      console.log('[Scene] Using virtual lights from lights.obj for scene', sceneName);
-      // Replace existing lights (e.g. default light) with virtual lights
-      scene.lightSources = [];
-      const totalIntensity = scene.params.defaultLightIntensity ?? 500000.0;
-      const div = scene.params.virtual_dir_div ?? 100;
-      // If we assumed lights.obj contains 'div*div' lights, then:
-      // But maybe we just respect total intensity spread over loaded lights.
-      const perLightIntensity = totalIntensity / Math.max(1, objLights.length);
-      // Or maybe use div*div if we want each to be small?
-      // Use logic: intensity is conserved.
-
-      const colorParts = scene.params.defaultLightColor ? scene.params.defaultLightColor.split(',').map(Number) : [1, 1, 1];
-      const color: Vec3 = [colorParts[0] ?? 1, colorParts[1] ?? 1, colorParts[2] ?? 1];
-
-      for (const p of objLights) {
-        scene.lightSources.push({
-          position: p,
-          intensity: perLightIntensity,
-          color,
-          spot: [0, 0, 0],
-          angle: -2.0,
-          useRaytracedShadows: true,
-          fixedIntensity: true, // Don't normalize these again?
-        });
-      }
     }
+    // Note: older logic for 'do_virtual' with OBJ lights is removed in favor of vlights.txt
   } else if (bounds && scene.lightSources.length === 0) {
     // Only add fallback if no lights exist
     const center: Vec3 = [
@@ -524,32 +541,13 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
   }
 
   // Normalize light intensities
-  // If we just loaded virtual lights, we might want to skip normalization if 'fixedIntensity' is true?
-  // Our logic sets fixedIntensity: true for virtual lights.
-
   const BASE_TOTAL_LUMINANCE = 2.0;
-  // If lights are fixedIntensity, we don't normalize them.
   let nonFixedLights = 0;
   for (const l of scene.lightSources) {
     if (!l.fixedIntensity) nonFixedLights++;
   }
 
   if (nonFixedLights > 0) {
-    // Logic for existing scenes (ram etc)
-    // But ram lights don't have fixedIntensity=true in current code?
-    // RAM code: `scene.lightSources.push({ ... })` - no fixedIntensity in original code block above.
-
-    // Let's modify normalization loop slightly to respect fixedIntensity
-    // But wait, line 494 in original file:
-    /*
-    for (const l of scene.lightSources) {
-      if (l.fixedIntensity) continue;
-      l.intensity = perLightIntensity;
-    }
-    */
-    // So it already respects fixedIntensity.
-    // We just need to make sure we don't mess up non-fixed lights.
-
     const perLightIntensity = BASE_TOTAL_LUMINANCE / Math.max(1, scene.lightSources.length);
     for (const l of scene.lightSources) {
       if (l.fixedIntensity) continue;

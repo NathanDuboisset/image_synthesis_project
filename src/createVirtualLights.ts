@@ -56,6 +56,39 @@ async function main() {
     const div = params.virtual_dir_div || 100;
     console.log(`[VirtualLights] Generating lights for scene '${sceneName}' with div=${div}`);
 
+    // Load Materials
+    const mtlPath = path.join(sceneDir, `${sceneName}.mtl`);
+    const materials: { name: string; albedo: Vec3 }[] = [];
+
+    // Default material
+    materials.push({ name: 'Default', albedo: [0.8, 0.8, 0.8] });
+
+    if (fs.existsSync(mtlPath)) {
+        console.log('[VirtualLights] Loading materials from', mtlPath);
+        const mtlText = fs.readFileSync(mtlPath, 'utf-8');
+        let currentMat: { name: string; albedo: Vec3 } | null = null;
+
+        for (const line of mtlText.split(/\r?\n/)) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length < 2) continue;
+            const kw = parts[0];
+
+            if (kw === 'newmtl') {
+                const name = parts[1] || 'Unknown';
+                currentMat = { name, albedo: [0.8, 0.8, 0.8] };
+                materials.push(currentMat);
+            } else if (kw === 'Kd' && currentMat) {
+                const r = Number(parts[1]);
+                const g = Number(parts[2]);
+                const b = Number(parts[3]);
+                if (!Number.isNaN(r)) currentMat.albedo = [r, g, b];
+            }
+        }
+        console.log(`[VirtualLights] Loaded ${materials.length} materials.`);
+    } else {
+        console.warn(`[VirtualLights] No MTL file found at ${mtlPath}`);
+    }
+
     // Load Mesh
     const objText = fs.readFileSync(objPath, 'utf-8');
     const { positions, indicesByMaterial } = parseOBJ(objText);
@@ -63,6 +96,11 @@ async function main() {
     const meshes: Mesh[] = [];
     for (const [matName, matIndices] of indicesByMaterial.entries()) {
         if (matIndices.length === 0) continue;
+
+        // Find material index
+        let matIndex = materials.findIndex(m => m.name === matName);
+        if (matIndex === -1) matIndex = 0; // Default
+
         const subPositions: number[] = [];
         const subIndices: number[] = [];
         const indexMap = new Map<number, number>();
@@ -85,7 +123,7 @@ async function main() {
             positions: new Float32Array(subPositions),
             normals: new Float32Array(subPositions.length),
             indices: new Uint32Array(subIndices),
-            materialIndex: 0 // Mock
+            materialIndex: matIndex
         };
         computeNormals(mesh);
         meshes.push(mesh);
@@ -95,7 +133,7 @@ async function main() {
     const scene: Scene = {
         camera: {} as any, // Mock
         meshes,
-        materials: [],
+        materials: materials as any, // Only need albedo really
         lightSources: []
     };
 
@@ -131,45 +169,15 @@ async function main() {
         process.exit(0);
     }
 
-    // Write OBJ output
-    const outPath = path.join(sceneDir, 'lights.obj'); // Using standard name consistently
+    // Write output to vlights.txt
+    // Format: x,y,z,intensity,r,g,b
+    const outPath = path.join(sceneDir, 'vlights.txt');
     const lines: string[] = [];
-
-    // We'll write them as small triangles with material 'RamLight'
-    // To mimic existing loader logic: centroid of triangle is light position.
-    // So for each VPL at P, we write a tiny triangle centered at P.
-    // e.g. (P + dx, P + dy, P + dz) ...
-    // Let's use a small offset like 0.01
-
-    lines.push(`usemtl RamLight`);
-    const offset = 0.01;
-    let vCount = 1;
 
     for (const l of vpls) {
         const [x, y, z] = l.position;
-        // Triangle: (x, y, z-offset), (x-offset, y, z+offset), (x+offset, y, z+offset)
-        // Centroid: (x, y, z + offset/3) -> close enough
-
-        // Let's make it simpler: (x-d, y, z), (x+d, y, z), (x, y+d, z) -> centroid (x, y+d/3, z)
-        // Or equilateral triangle in XZ plane:
-        // P1 = (x, y, z - d)
-        // P2 = (x - d*0.866, y, z + d*0.5)
-        // P3 = (x + d*0.866, y, z + d*0.5)
-        // Centroid = (x, y, z) exactly.
-
-        const d = 0.05;
-        const h = d * 0.866; // sqrt(3)/2
-        const r = d * 0.5;
-
-        // v1: top
-        lines.push(`v ${x} ${y} ${z - d}`);
-        // v2: left
-        lines.push(`v ${x - h} ${y} ${z + r}`);
-        // v3: right
-        lines.push(`v ${x + h} ${y} ${z + r}`);
-
-        lines.push(`f ${vCount} ${vCount + 1} ${vCount + 2}`);
-        vCount += 3;
+        const [r, g, b] = l.color;
+        lines.push(`${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)},${l.intensity.toFixed(4)},${r.toFixed(4)},${g.toFixed(4)},${b.toFixed(4)}`);
     }
 
     fs.writeFileSync(outPath, lines.join('\n'), 'utf-8');

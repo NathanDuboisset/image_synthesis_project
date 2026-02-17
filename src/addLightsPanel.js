@@ -18,6 +18,7 @@ export function createLightPanel(
   maxX,
   minY,
   maxY,
+  totalIntensity = 1000.0
 ) {
   if (typeof sceneName !== 'string' || !sceneName.length) {
     throw new Error('sceneName must be a non-empty string');
@@ -31,54 +32,56 @@ export function createLightPanel(
   const thisFile = fileURLToPath(import.meta.url);
   const projectRoot = path.resolve(path.dirname(thisFile), '..');
   const sceneDir = path.join(projectRoot, 'data', 'scenes', sceneName);
-  const outPath = path.join(sceneDir, `lights${nblights}.txt`);
-  const objPath = path.join(sceneDir, `${sceneName}.obj`);
 
-  // Ensure scene directory and OBJ exist.
+  // Output to vlights.txt (or lights<N>.txt if we want to keep specific N naming, 
+  // but simpler to use vlights.txt if that's the standard now. 
+  // User asked to put it in "vlights.txt" for virtual lights. 
+  // This script seems to generate specific grid. 
+  // Let's output to vlights.txt to match the request "put it in a file vlights.txt").
+  // But wait, "lights50.txt" suggests user might want multiple configs?
+  // User said "update also @[src/addLightsPanel.js] so it similarly creates these virtual ligths".
+  // Let's use `vlights.txt` as standard.
+  const outPath = path.join(sceneDir, `vlights.txt`);
+
+  // Create directory if needed
   if (!fs.existsSync(sceneDir)) {
-    throw new Error(`Scene directory does not exist: ${sceneDir}`);
+    fs.mkdirSync(sceneDir, { recursive: true });
   }
-  if (!fs.existsSync(objPath)) {
-    throw new Error(`Scene OBJ file does not exist: ${objPath}`);
-  }
-  const baseVertexIndex = 0;
-
-  const vertsPerSide = n + 1;
 
   const lines = [];
-  lines.push(`usemtl ${textureName}`);
+  const perLightIntensity = totalIntensity / nblights;
 
-  // v x y z
-  for (let j = 0; j < vertsPerSide; j++) {
-    const tj = vertsPerSide > 1 ? j / (vertsPerSide - 1) : 0.5;
+  // Color: User said "using the reflectiveness etc". 
+  // For a light panel, it's usually emissive white or based on texture name.
+  // We'll assume white [1,1,1] for now as it's an emitter.
+  // Or maybe parse textureName? e.g. "RamLight" -> white.
+  const r = 1.0, g = 1.0, b = 1.0;
+
+  for (let j = 0; j < n; j++) {
+    // 0..1 parameter
+    const tj = n > 1 ? j / (n - 1) : 0.5;
     const z = lerp(minY, maxY, tj);
-    for (let i = 0; i < vertsPerSide; i++) {
-      const ti = vertsPerSide > 1 ? i / (vertsPerSide - 1) : 0.5;
+
+    for (let i = 0; i < n; i++) {
+      const ti = n > 1 ? i / (n - 1) : 0.5;
       const x = lerp(minX, maxX, ti);
       const y = height;
-      lines.push(`v ${x} ${y} ${z}`);
-    }
-  }
-  const vIndex = (i, j) => 1 + j * vertsPerSide + i;
-  for (let j = 0; j < n; j++) {
-    for (let i = 0; i < n; i++) {
-      const v00 = baseVertexIndex + vIndex(i, j);
-      const v10 = baseVertexIndex + vIndex(i + 1, j);
-      const v11 = baseVertexIndex + vIndex(i + 1, j + 1);
-      const v01 = baseVertexIndex + vIndex(i, j + 1);
-      lines.push(`f ${v00} ${v10} ${v11}`);
-      lines.push(`f ${v00} ${v11} ${v01}`);
+
+      // Format: x,y,z,intensity,r,g,b
+      lines.push(`${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)},${perLightIntensity.toFixed(4)},${r},${g},${b}`);
     }
   }
 
   const content = lines.join('\n') + '\n';
   fs.writeFileSync(outPath, content, 'utf8');
-  console.log(`[addLightsPanel] Wrote OBJ light panel to ${outPath}`);
+  console.log(`[addLightsPanel] Wrote vlights.txt to ${outPath}`);
 }
 
 const args = process.argv.slice(2);
 if (args.length >= 8) {
-  const [sceneName, textureName, lightsPerSide, height, minX, maxX, minY, maxY] = args;
+  const [sceneName, textureName, lightsPerSide, height, minX, maxX, minY, maxY, totalIntensityStr] = args;
+  const totalIntensity = totalIntensityStr ? Number(totalIntensityStr) : 1000.0;
+
   createLightPanel(
     sceneName,
     textureName,
@@ -88,8 +91,9 @@ if (args.length >= 8) {
     Number(maxX),
     Number(minY),
     Number(maxY),
+    totalIntensity
   );
 } else if (args.length > 0) {
-  console.error('Usage: node js/addLightsPanel.js <sceneName> <textureName> <lightsPerSide> <height> <minX> <maxX> <minY> <maxY>');
+  console.error('Usage: node js/addLightsPanel.js <sceneName> <textureName> <lightsPerSide> <height> <minX> <maxX> <minY> <maxY> [totalIntensity]');
   process.exit(1);
 }

@@ -95,7 +95,7 @@ function intersectTriangle(orig: Vec3, dir: Vec3, v0: Vec3, v1: Vec3, v2: Vec3):
 }
 
 export function generateVirtualLights(scene: Scene, sourceLight: LightSource, div: number): LightSource[] {
-    console.log('[VirtualLights] Generating virtual lights with div =', div);
+    console.log('[VirtualLights] Generating virtual lights (Cube) with div =', div);
     const virtualLights: LightSource[] = [];
     const start = performance.now();
 
@@ -103,82 +103,108 @@ export function generateVirtualLights(scene: Scene, sourceLight: LightSource, di
     const meshAABBs = scene.meshes.map(m => computeMeshAABB(m));
 
     // Limit div if excessive
-    const safeDiv = Math.min(div, 200); // 40000 rays max
-    const totalRays = safeDiv * safeDiv;
+    const safeDiv = Math.min(div, 100);
+    const totalRays = safeDiv * safeDiv * 6;
     const intensityPerLight = sourceLight.intensity / totalRays;
+    const orig = sourceLight.position;
 
-    for (let i = 0; i < safeDiv; i++) {
-        const theta = (i / safeDiv) * Math.PI;
-        const sinTheta = Math.sin(theta);
-        const cosTheta = Math.cos(theta);
+    for (let face = 0; face < 6; face++) {
+        for (let i = 0; i < safeDiv; i++) {
+            for (let j = 0; j < safeDiv; j++) {
+                const u = ((i + 0.5) / safeDiv) * 2.0 - 1.0;
+                const v = ((j + 0.5) / safeDiv) * 2.0 - 1.0;
 
-        for (let j = 0; j < safeDiv; j++) {
-            const phi = (j / safeDiv) * 2.0 * Math.PI;
-            const x = Math.cos(phi) * sinTheta;
-            const y = cosTheta;
-            const z = Math.sin(phi) * sinTheta;
-            const dir = vec3Normalize([x, y, z]);
+                let x = 0, y = 0, z = 0;
+                if (face === 0) { x = 1; y = u; z = v; }       // +X
+                else if (face === 1) { x = -1; y = u; z = v; } // -X
+                else if (face === 2) { x = u; y = 1; z = v; }  // +Y
+                else if (face === 3) { x = u; y = -1; z = v; } // -Y
+                else if (face === 4) { x = u; y = v; z = 1; }  // +Z
+                else if (face === 5) { x = u; y = v; z = -1; } // -Z
 
-            let minT = Infinity;
-            let bestHit: Hit | null = null;
-            const orig = sourceLight.position;
+                const dir = vec3Normalize([x, y, z]);
 
-            for (let m = 0; m < scene.meshes.length; m++) {
-                const mesh = scene.meshes[m]!;
-                const aabb = meshAABBs[m];
-                if (!aabb || !mesh.positions || !mesh.indices) continue;
+                let minT = Infinity;
+                let bestHit: Hit | null = null;
 
-                // Simple box culling
-                if (!intersectAABB(orig, dir, aabb)) continue;
+                for (let m = 0; m < scene.meshes.length; m++) {
+                    const mesh = scene.meshes[m]!;
+                    const aabb = meshAABBs[m];
+                    if (!aabb || !mesh.positions || !mesh.indices) continue;
 
-                const numTris = mesh.indices.length / 3;
-                for (let k = 0; k < numTris; k++) {
-                    const i0 = mesh.indices[3 * k]!;
-                    const i1 = mesh.indices[3 * k + 1]!;
-                    const i2 = mesh.indices[3 * k + 2]!;
+                    // Simple box culling
+                    if (!intersectAABB(orig, dir, aabb)) continue;
 
-                    const v0: Vec3 = [mesh.positions[3 * i0]!, mesh.positions[3 * i0 + 1]!, mesh.positions[3 * i0 + 2]!];
-                    const v1: Vec3 = [mesh.positions[3 * i1]!, mesh.positions[3 * i1 + 1]!, mesh.positions[3 * i1 + 2]!];
-                    const v2: Vec3 = [mesh.positions[3 * i2]!, mesh.positions[3 * i2 + 1]!, mesh.positions[3 * i2 + 2]!];
+                    const numTris = mesh.indices.length / 3;
+                    for (let k = 0; k < numTris; k++) {
+                        const i0 = mesh.indices[3 * k]!;
+                        const i1 = mesh.indices[3 * k + 1]!;
+                        const i2 = mesh.indices[3 * k + 2]!;
 
-                    const triHit = intersectTriangle(orig, dir, v0, v1, v2);
-                    if (triHit && triHit.t < minT) {
-                        minT = triHit.t;
+                        const v0: Vec3 = [mesh.positions[3 * i0]!, mesh.positions[3 * i0 + 1]!, mesh.positions[3 * i0 + 2]!];
+                        const v1: Vec3 = [mesh.positions[3 * i1]!, mesh.positions[3 * i1 + 1]!, mesh.positions[3 * i1 + 2]!];
+                        const v2: Vec3 = [mesh.positions[3 * i2]!, mesh.positions[3 * i2 + 1]!, mesh.positions[3 * i2 + 2]!];
 
-                        // Interpolate normal
-                        const n0: Vec3 = [mesh.normals[3 * i0]!, mesh.normals[3 * i0 + 1]!, mesh.normals[3 * i0 + 2]!];
-                        const n1: Vec3 = [mesh.normals[3 * i1]!, mesh.normals[3 * i1 + 1]!, mesh.normals[3 * i1 + 2]!];
-                        const n2: Vec3 = [mesh.normals[3 * i2]!, mesh.normals[3 * i2 + 1]!, mesh.normals[3 * i2 + 2]!];
+                        const triHit = intersectTriangle(orig, dir, v0, v1, v2);
+                        if (triHit && triHit.t < minT) {
+                            minT = triHit.t;
 
-                        const w = 1.0 - triHit.u - triHit.v;
-                        const nx = w * n0[0] + triHit.u * n1[0] + triHit.v * n2[0];
-                        const ny = w * n0[1] + triHit.u * n1[1] + triHit.v * n2[1];
-                        const nz = w * n0[2] + triHit.u * n1[2] + triHit.v * n2[2];
-                        const normal = vec3Normalize([nx, ny, nz]);
+                            // Interpolate normal
+                            const n0: Vec3 = [mesh.normals[3 * i0]!, mesh.normals[3 * i0 + 1]!, mesh.normals[3 * i0 + 2]!];
+                            const n1: Vec3 = [mesh.normals[3 * i1]!, mesh.normals[3 * i1 + 1]!, mesh.normals[3 * i1 + 2]!];
+                            const n2: Vec3 = [mesh.normals[3 * i2]!, mesh.normals[3 * i2 + 1]!, mesh.normals[3 * i2 + 2]!];
 
-                        bestHit = {
-                            t: minT,
-                            position: vec3Add(orig, vec3Scale(dir, minT)),
-                            normal: normal,
-                            materialIndex: mesh.materialIndex
-                        };
+                            const w = 1.0 - triHit.u - triHit.v;
+                            const nx = w * n0[0] + triHit.u * n1[0] + triHit.v * n2[0];
+                            const ny = w * n0[1] + triHit.u * n1[1] + triHit.v * n2[1];
+                            const nz = w * n0[2] + triHit.u * n1[2] + triHit.v * n2[2];
+                            const normal = vec3Normalize([nx, ny, nz]);
+
+                            bestHit = {
+                                t: minT,
+                                position: vec3Add(orig, vec3Scale(dir, minT)),
+                                normal: normal,
+                                materialIndex: mesh.materialIndex
+                            };
+                        }
                     }
                 }
-            }
 
-            if (bestHit) {
-                const pos = vec3Add(bestHit.position, vec3Scale(bestHit.normal, 0.1));
-                virtualLights.push({
-                    position: pos,
-                    intensity: intensityPerLight,
-                    color: sourceLight.color,
-                    spot: [0, 0, 0],
-                    angle: -2.0,
-                    useRaytracedShadows: sourceLight.useRaytracedShadows,
-                    fixedIntensity: true
-                });
+                if (bestHit) {
+                    const pos = vec3Add(bestHit.position, vec3Scale(bestHit.normal, 0.1));
+
+                    // Calculate new color
+                    let color = sourceLight.color;
+                    if (bestHit.materialIndex !== undefined && scene.materials && scene.materials[bestHit.materialIndex]) {
+                        const mat = scene.materials[bestHit.materialIndex];
+                        if (mat && mat.albedo) {
+                            color = [
+                                color[0] * mat.albedo[0],
+                                color[1] * mat.albedo[1],
+                                color[2] * mat.albedo[2]
+                            ];
+                        }
+                    }
+
+                    // Attenuate intensity by distance squared
+                    const dist = bestHit.t;
+                    // Avoid division by zero or extremely high values for very close hits
+                    const distSq = Math.max(0.1, dist * dist);
+                    const attenuatedIntensity = intensityPerLight / distSq;
+
+                    virtualLights.push({
+                        position: pos,
+                        intensity: attenuatedIntensity,
+                        color: color,
+                        spot: [0, 0, 0],
+                        angle: -2.0,
+                        useRaytracedShadows: sourceLight.useRaytracedShadows,
+                        fixedIntensity: true
+                    });
+                }
             }
         }
+        console.log(`[VirtualLights] Face ${face + 1}/6 completed. Total lights so far: ${virtualLights.length}`);
     }
 
     const end = performance.now();

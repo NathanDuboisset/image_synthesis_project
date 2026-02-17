@@ -198,6 +198,19 @@ export function buildLightcutTreeKDTree(lightSources: LightSource[], method: 'sp
                     rightSlice.push(item);
                 }
             }
+
+            if (leftSlice.length === 0 || rightSlice.length === 0) {
+                // Fallback: split in half
+                const half = Math.floor(subset.length / 2);
+                leftSlice.length = 0;
+                rightSlice.length = 0;
+                for (let i = 0; i < subset.length; i++) {
+                    if (i < half) leftSlice.push(subset[i]!);
+                    else rightSlice.push(subset[i]!);
+                }
+            }
+
+            // console.log('Left:', leftSlice.length, 'Right:', rightSlice.length);
             left = buildRecursive(leftSlice);
             right = buildRecursive(rightSlice);
         }
