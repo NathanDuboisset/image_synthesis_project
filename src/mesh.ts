@@ -1,5 +1,5 @@
 import type { Vec3, Mesh } from './types.ts';
-import { vec3Sub, vec3Cross, vec3Normalize } from './math.ts';
+import { vec3Add, vec3Sub, vec3Cross, vec3Normalize } from './math.ts';
 
 export function computeNormals(mesh: Mesh): void {
   const numOfTri = mesh.indices.length / 3;
@@ -29,7 +29,6 @@ export function computeNormals(mesh: Mesh): void {
 }
 
 export function createQuad(origin: Vec3, edge0: Vec3, edge1: Vec3): Mesh {
-  const vec3Add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
   const a = vec3Add(origin, edge0);
   const b = vec3Add(a, edge1);
   const c = vec3Add(origin, edge1);
@@ -87,7 +86,6 @@ export function createSphere(radius: number, latitudeRes: number, longitudeRes: 
   };
 }
 
-// Build mesh from JSON data
 export function createRamFromData(data: { positions: number[]; indices: number[] }): Mesh {
   const mesh: Mesh = {
     positions: new Float32Array(data.positions),

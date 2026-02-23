@@ -2,7 +2,7 @@ import type { Vec3, Scene, Material, Mesh, LightSource, SceneParams, SceneBounds
 import { createCamera } from './camera.ts';
 import { loadOBJScene, loadOBJLights } from './objLoader.ts';
 
-// Scene names: 'ram' | 'sponza' | 'conference'
+// Scene names: 'ram' | 'conference'
 
 async function loadMaterialsFromMTL(sceneName: string): Promise<NamedMaterial[]> {
   const url = `data/scenes/${sceneName}/${sceneName}.mtl`;

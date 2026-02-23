@@ -15,7 +15,7 @@ struct Material {
   albedo: vec3<f32>,
   roughness: f32,
   metalness: f32,
-  _pad2: vec2<f32> // Padding for alignment
+  _pad2: vec2<f32>
 };
 
 struct Camera {
@@ -26,14 +26,14 @@ struct Camera {
   projMat: mat4x4<f32>,
   fov: f32,
   aspectRatio: f32,
-  _pad: vec2<f32> // Padding for alignment
+  _pad: vec2<f32>
 };
 
 struct Mesh {
-    posOffset: u32, // in vertices, used for all attribute buffer for now
-    triOffset: u32, // in triangles
+    posOffset: u32,
+    triOffset: u32,
     numOfTriangles: u32,
-    materialIndex: u32, // index over the material buffer
+    materialIndex: u32,
 };
 
 struct Scene {
@@ -44,7 +44,7 @@ struct Scene {
   lightEndIndex: f32,
   screenWidth: f32,
   screenHeight: f32,
-  frameCount: f32, // For stochastic
+  frameCount: f32,
 };
 
 struct DebugParams {
@@ -55,31 +55,15 @@ struct DebugParams {
   fullbright: u32,
 };
 
-@group(0) @binding(0)
-var<uniform> scene : Scene; // The only uniform buffer, as the camera paramters change frequently
+@group(0) @binding(0) var<uniform> scene : Scene;
+@group(0) @binding(1) var<storage, read> positions : array<f32>;
+@group(0) @binding(2) var<storage, read> normals : array<f32>;
+@group(0) @binding(3) var<storage, read> triangles : array<u32>;
+@group(0) @binding(4) var<storage, read> meshes : array<Mesh>;
+@group(0) @binding(5) var<storage, read> materials : array<Material>;
+@group(0) @binding(6) var<storage, read> lightSources : array<LightSource>;
 
-@group(0) @binding(1)
-var<storage, read> positions : array<f32>; // Packed positions for all meshes
-
-@group(0) @binding(2)
-var<storage, read> normals : array<f32>; // Packed normals for all meshes
-
-@group(0) @binding(3)
-var<storage, read> triangles : array<u32>; // Packed triangles for all meshes
-
-@group(0) @binding(4)
-var<storage, read> meshes : array<Mesh>; // The scene's meshes
-
-@group(0) @binding(5)
-var<storage, read> materials : array<Material>; // matei
-
-@group(0) @binding(6)
-var<storage, read> lightSources : array<LightSource>;
-
-@group(0) @binding(7)
-var<uniform> debugParams : DebugParams;
-
-// ─── Lightcut tree (GPU storage) ──────────────────────────────────────────
+@group(0) @binding(7) var<uniform> debugParams : DebugParams;
 
 struct LightcutGPUNode {
   position: vec3<f32>,     // representative position (world space)
@@ -92,8 +76,7 @@ struct LightcutGPUNode {
   rightChild: f32,         // BFS index, -1 = leaf
 };
 
-@group(0) @binding(8)
-var<storage, read> lightcutTree : array<LightcutGPUNode>;
+@group(0) @binding(8) var<storage, read> lightcutTree : array<LightcutGPUNode>;
 
 struct RasterVertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -125,7 +108,6 @@ fn sqr(x: f32) -> f32 {
 
 fn attenuation(dist: f32, coneDecay: f32) -> f32 {
   return coneDecay * (1.0 / sqr(dist));
-  //return coneDecay / (1.0 + 0.02 * sqr(dist));
 }
 
 fn TrowbridgeReitzNDF(wh : vec3f, n : vec3f, roughness: f32) -> f32 {
@@ -138,7 +120,6 @@ fn SchlickFresnel(wi: vec3f, wh: vec3f, F0: vec3f) -> vec3f {
 }
 
 fn SmithG1(w: vec3f, n : vec3f, roughness: f32) -> f32 {
-  // Schlick-GGX Geometry masking
   let NdotW = dot(n,w);
   let alpha2 = sqr (roughness);
   return (2.0 * NdotW) / (NdotW + sqrt(alpha2 + (1-alpha2)*sqr(NdotW)));
@@ -168,25 +149,17 @@ fn BRDF(
 
   let wh = normalize(wi + wo);
   let NdotH = max(0.0, dot(n, wh));
-  let VdotH = max(0.0, dot(wo, wh));
 
-  // Normal distribution function, sometimes coined "GGX"
   let D = TrowbridgeReitzNDF(wh, n, alpha);
-
-  // Schlick approximation to the Fresnel term
   let F = SchlickFresnel(wi, wh, specularColor);
-
-  // Masking-Shadowing term
   let G = SmithGGX(wi, wo, n, alpha);
 
-  // "A" reasonable combination of diffuse and specular responses
   let fd = diffuseColor * (vec3f(1.0) - specularColor) / PI;
   let fs = F * D * G / (4.0);
 
   return (fd + fs);
 }
 
-// Operate in view space i.e., in the local frame of the camera
 fn lightShade(position: vec3f, normal: vec3f, materialIndex: u32, lightSourceIndex: u32, wo: vec3f) -> vec3f {
   let light = lightSources[lightSourceIndex];
   let cam = scene.camera;
@@ -223,11 +196,8 @@ fn computeRadiance(position: vec3f, normal: vec3f, materialIndex: u32, wo: vec3f
   return colorResponse;
 }
 
-// ─── Lightcuts: per-pixel tree traversal ─────────────────────────────────
+const LC_MAX_CUT = 32u;
 
-const LC_MAX_CUT = 32u;   // hard upper bound on cut array size
-
-// Shade a single lightcut node
 fn shadeLightcutNode(
   node: LightcutGPUNode,
   worldPos: vec3f,
@@ -241,7 +211,6 @@ fn shadeLightcutNode(
   let dist = length(L);
   let dir = normalize(L);
 
-  // Shadow ray (same as normal RT path)
   var shadowRay: Ray;
   shadowRay.origin = worldPos;
   shadowRay.direction = dir;
@@ -250,7 +219,6 @@ fn shadeLightcutNode(
     return vec3f(0.0);
   }
 
-  // PBR shading
   let att = 10.0 / (dist * dist + 0.1);
   let radiance = node.color * node.intensity * att;
   let cam = scene.camera;
@@ -291,16 +259,13 @@ fn computeRadianceLightcuts(
     return vec3f(0.0);
   }
 
-  // Seed with root node (index 0)
   cutIdx[0]   = 0u;
   cutError[0] = lightcutErrorBound(lightcutTree[0], worldPos);
   cutSize = 1u;
 
-  // Greedy refinement
   for (var iter = 0u; iter < 256u; iter++) {
     if (cutSize >= maxCut) { break; }
 
-    // Find the cut entry with the highest error bound
     var worstIdx = 0u;
     var worstErr = -1.0;
     for (var c = 0u; c < cutSize; c++) {
@@ -334,7 +299,6 @@ fn computeRadianceLightcuts(
     }
   }
 
-  // Shade each representative in the final cut
   var color = vec3f(0.0);
   for (var c = 0u; c < cutSize; c++) {
     let n = lightcutTree[cutIdx[c]];
@@ -344,9 +308,7 @@ fn computeRadianceLightcuts(
 }
 
 
-//-----------------------------------------------------------------------
 // Rasterization shaders
-//-----------------------------------------------------------------------
 
 @vertex
   fn rasterVertexMain(input: RasterVertexInput) -> RasterVertexOutput {
@@ -354,7 +316,6 @@ fn computeRadianceLightcuts(
     var mesh = meshes[input.meshIndex];
     let vID = input.vertexIndex;
 
-    // Recovering triangle and vertex from the draw index
     let triIndex = vID / 3u;
     let triVertIndex = vID % 3u;
     let triangle = getTriangle(mesh.triOffset + triIndex);
@@ -362,7 +323,7 @@ fn computeRadianceLightcuts(
 
     var output: RasterVertexOutput;
     let p = cam.viewMat * cam.modelMat * vec4f(getVertPos(vertIndex), 1.0);
-    output.builtInPos = cam.projMat * p; // Fires rasterization
+    output.builtInPos = cam.projMat * p;
     output.position = p.xyz;
     let n = cam.transInvViewMat * vec4f(getVertNormal(vertIndex), 1.0);
     output.normal = normalize(n.xyz);
@@ -373,11 +334,9 @@ fn computeRadianceLightcuts(
 @fragment
   fn rasterFragmentMain(input: RasterVertexOutput) -> @location(0) vec4f {
     let m = materials[input.materialIndex];
-    // Fullbright: show raw albedo
     if (debugParams.fullbright == 1u) {
       return vec4f(m.albedo, 1.0);
     }
-    // Debug 2: raw albedo
     if (debugParams.mode == 2u) {
       return vec4f(m.albedo, 1.0);
     }
@@ -388,9 +347,7 @@ fn computeRadianceLightcuts(
     return vec4f(colorResponse, 1.0);
   }
 
-//-----------------------------------------------------------------------
 // Ray tracing pipeline shaders
-//-----------------------------------------------------------------------
 
 struct RayVertexInput {
   @builtin(vertex_index) vertexIndex: u32
@@ -443,7 +400,6 @@ fn intersectTriangle(
   tMax: f32,
   hit: ptr<function, Hit>
 ) -> bool {
-  const EPSILON = 1e-6;
   let e1 = p1 - p0;
   let e2 = p2 - p0;
   let dxe2 = cross(ray.direction, e2);
@@ -471,9 +427,9 @@ fn intersectTriangle(
 
 fn rayTrace(
   ray: Ray,
-  maxDistance: f32, // Ignore intersections found further away
-  anyHit: bool, // Return as soon as an intersection is found if true
-  hit: ptr<function, Hit> // Filled only if an intersection is found and anyHit is false
+  maxDistance: f32,
+  anyHit: bool,
+  hit: ptr<function, Hit>
 ) -> bool {
   var intersectionFound = false;
   let numOfMeshes = u32(scene.numOfMeshes);
@@ -502,7 +458,6 @@ fn rayTrace(
 }
 
 
-// PCG hash for random number generation
 fn pcg_hash(seed: u32) -> u32 {
     let state = seed * 747796405u + 2891336453u;
     let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
@@ -513,6 +468,15 @@ fn pcg_hash(seed: u32) -> u32 {
 fn rand(seed: ptr<function, u32>) -> f32 {
     *seed = pcg_hash(*seed);
     return f32(*seed) / 4294967296.0;
+}
+
+// Importance weight for stochastic traversal: always positive, including for leaf nodes.
+// Unlike lightcutErrorBound (which uses AABB diagonal and zeroes out leaves),
+// this uses intensity/distSq so every node has a nonzero probability of being sampled.
+fn stochasticWeight(node: LightcutGPUNode, worldPos: vec3f) -> f32 {
+    let L = node.position - worldPos;
+    let distSq = dot(L, L) + 0.001;
+    return node.intensity / distSq;
 }
 
 fn computeRadianceStochasticLightcuts(
@@ -529,13 +493,9 @@ fn computeRadianceStochasticLightcuts(
     return vec3f(0.0);
   }
 
-  // Seed based on position and frame count for noise variation
   var seed = pcg_hash(u32(screenPos.x * 1000.0) ^ u32(screenPos.y * 1000.0) ^ u32(scene.frameCount));
 
   var radiance = vec3f(0.0);
-  
-  // We perform 'maxCutSize' independent paths. 
-  // For standard accumulation, maxCutSize=1 is sufficient but noisier.
   let numSamples = max(1u, debugParams.maxCutSize);
 
   for (var s = 0u; s < numSamples; s++) {
@@ -550,51 +510,34 @@ fn computeRadianceStochasticLightcuts(
           let isLeaf = leftI < 0 && rightI < 0;
 
           if (isLeaf) {
-              // Shade leaf
               let val = shadeLightcutNode(node, worldPos, worldNormal, viewPos, viewNormal, materialIndex, wo);
               radiance += val / pdf;
               break;
           }
 
-          // Calculate error bounds (importance) for children
-          var errL = 0.0;
-          var errR = 0.0;
+          var wL = 0.0;
+          var wR = 0.0;
           if (leftI >= 0 && u32(leftI) < nodeCount) {
-              errL = lightcutErrorBound(lightcutTree[u32(leftI)], worldPos);
+              wL = stochasticWeight(lightcutTree[u32(leftI)], worldPos);
           }
           if (rightI >= 0 && u32(rightI) < nodeCount) {
-              errR = lightcutErrorBound(lightcutTree[u32(rightI)], worldPos);
+              wR = stochasticWeight(lightcutTree[u32(rightI)], worldPos);
           }
 
-          let sumErr = errL + errR;
-          
-          if (sumErr <= 1e-6) {
-             // Both children have negligible error bound (e.g. out of range or blocked approx)
-             // We can stop or pick one uniformly. 
-             // To be safe, we pick based on intensity if error is zero?
-             // Or just pick left?
-             // Let's bias towards uniform if errors are 0.
-             if (rand(&seed) < 0.5) {
-                if (leftI >= 0) { nodeId = u32(leftI); pdf *= 0.5; }
-                else if (rightI >= 0) { nodeId = u32(rightI); pdf *= 0.5; }
-                else { break; } // Should use break logic above
-             } else {
-                if (rightI >= 0) { nodeId = u32(rightI); pdf *= 0.5; }
-                else if (leftI >= 0) { nodeId = u32(leftI); pdf *= 0.5; }
-                else { break; }
-             }
-          } else {
-              // Importance sample children
-              let probL = errL / sumErr;
-              if (rand(&seed) < probL) {
-                  nodeId = u32(leftI);
-                  pdf *= probL;
-              } else {
-                  nodeId = u32(rightI);
-                  pdf *= (1.0 - probL);
-              }
+          let sumW = wL + wR;
+          var probL = 0.5;
+          if (sumW > 1e-9) {
+              probL = wL / sumW;
           }
-          // Safety break
+
+          if (rand(&seed) < probL) {
+              if (leftI >= 0) { nodeId = u32(leftI); } else { break; }
+              pdf *= probL;
+          } else {
+              if (rightI >= 0) { nodeId = u32(rightI); } else { break; }
+              pdf *= (1.0 - probL);
+          }
+
           depth = depth + 1u;
           if (depth > 64u) { break; }
       }
@@ -604,10 +547,8 @@ fn computeRadianceStochasticLightcuts(
 }
 
 fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
-  // Debug mode is driven by a small uniform set from the UI.
   let debugMode = debugParams.mode;
 
-  // Fullbright check (RT)
   if (debugParams.fullbright == 1u) {
     let m = materials[meshes[hit.meshIndex].materialIndex];
     return vec4f(m.albedo, 1.0);
@@ -617,7 +558,6 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
   let tri = getTriangle(mesh.triOffset + hit.triIndex);
   let uvw = vec3f(hit.u, hit.v, 1.0 - hit.u - hit.v);
 
-  // Reconstruct World Data
   let p0 = getVertPos(mesh.posOffset + tri.x);
   let p1 = getVertPos(mesh.posOffset + tri.y);
   let p2 = getVertPos(mesh.posOffset + tri.z);
@@ -647,7 +587,6 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
   var outputColor = vec3f(0.0);
   var visibleCount = 0.0;
 
-  // ── Lightcuts path: per-pixel tree traversal ──────────────────────
   if (debugParams.lightcutNodeCount > 0u) {
     if (debugParams.algorithm == 1u) {
        outputColor = computeRadianceStochasticLightcuts(
@@ -661,7 +600,6 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
     return vec4f(outputColor, 1.0);
   }
 
-  // ── Normal light loop ─────────────────────────────────────────────
   // Use light range from uniforms (supports accumulation passes)
   let startIdx = u32(scene.lightStartIndex);
   let endIdx = u32(scene.lightEndIndex);
@@ -688,10 +626,8 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
     }
 
     if (visible > 0.0) {
-       // Accumulate for heatmap
        visibleCount += 1.0;
 
-       // Normal shading math
        if (debugMode == 0u) {
            let att = 10.0 / (dist * dist + 0.1); 
            let radiance = l.color * l.intensity * att;
@@ -711,7 +647,6 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
   return vec4f(vec3f(v), 1.0);
 }
 
-  // DEBUG 0: Normal PBR
   return vec4f(outputColor, 1.0);
 }
 
@@ -733,7 +668,6 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
 @fragment
   fn rayFragmentMain(input: RayFragmentInput) -> @location(0) vec4f {
     const MAX_DISTANCE = 1e8;
-    // Use actual canvas resolution from the uniform instead of hardcoded values.
     let coord = vec2f(
       input.fragPos.x / scene.screenWidth,
       1.0 - input.fragPos.y / scene.screenHeight
@@ -747,7 +681,6 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
     return colorResponse;
   }
 
-// Blit offscreen texture to swap chain (fullscreen quad = 2 triangles, 6 vertices). Uses group 0.
 @group(0) @binding(0) var blitTex: texture_2d<f32>;
 @group(0) @binding(1) var blitSampler: sampler;
 
@@ -756,10 +689,8 @@ struct BlitVertexOutput {
   @location(0) uv: vec2f,
 }
 
-@vertex
-fn blitVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput {
+fn fullscreenQuadVertex(vi: u32) -> BlitVertexOutput {
   var out: BlitVertexOutput;
-  // Fullscreen quad: 6 vertices = two triangles (0,1,2) and (2,1,3). Y up in NDC.
   let corners = array<vec2f, 4>(
     vec2f(-1.0, 1.0), vec2f(1.0, 1.0), vec2f(-1.0, -1.0), vec2f(1.0, -1.0)
   );
@@ -772,43 +703,29 @@ fn blitVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput {
   out.uv = uvs[i];
   return out;
 }
+
+@vertex
+fn blitVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput { return fullscreenQuadVertex(vi); }
 
 @fragment
 fn blitFragmentMain(input: BlitVertexOutput) -> @location(0) vec4f {
   return textureSample(blitTex, blitSampler, input.uv);
 }
 
-// -----------------------------------------------------------------------
 // Accumulation blit shaders
-// -----------------------------------------------------------------------
 
-// Additive pass for accumulation
 @group(0) @binding(0) var accumSrcTex: texture_2d<f32>;
 @group(0) @binding(1) var accumSrcSampler: sampler;
 
 @vertex
-fn accumBlitVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput {
-  var out: BlitVertexOutput;
-  let corners = array<vec2f, 4>(
-    vec2f(-1.0, 1.0), vec2f(1.0, 1.0), vec2f(-1.0, -1.0), vec2f(1.0, -1.0)
-  );
-  let uvs = array<vec2f, 4>(
-    vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(1.0, 1.0)
-  );
-  let idx = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
-  let i = idx[vi];
-  out.position = vec4f(corners[i], 0.0, 1.0);
-  out.uv = uvs[i];
-  return out;
-}
+fn accumBlitVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput { return fullscreenQuadVertex(vi); }
 
 @fragment
 fn accumBlitFragmentMain(input: BlitVertexOutput) -> @location(0) vec4f {
   return textureSample(accumSrcTex, accumSrcSampler, input.uv);
 }
 
-// Final blit: divide by pass count.
-// passCount is a uniform.
+// Final blit: divide accumulated samples by pass count.
 struct AccumFinalParams {
   invPassCount: f32,
   _pad: vec3<f32>,
@@ -819,20 +736,7 @@ struct AccumFinalParams {
 @group(0) @binding(2) var<uniform> accumFinalParams: AccumFinalParams;
 
 @vertex
-fn accumFinalVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput {
-  var out: BlitVertexOutput;
-  let corners = array<vec2f, 4>(
-    vec2f(-1.0, 1.0), vec2f(1.0, 1.0), vec2f(-1.0, -1.0), vec2f(1.0, -1.0)
-  );
-  let uvs = array<vec2f, 4>(
-    vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(1.0, 1.0)
-  );
-  let idx = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
-  let i = idx[vi];
-  out.position = vec4f(corners[i], 0.0, 1.0);
-  out.uv = uvs[i];
-  return out;
-}
+fn accumFinalVertexMain(@builtin(vertex_index) vi: u32) -> BlitVertexOutput { return fullscreenQuadVertex(vi); }
 
 @fragment
 fn accumFinalFragmentMain(input: BlitVertexOutput) -> @location(0) vec4f {

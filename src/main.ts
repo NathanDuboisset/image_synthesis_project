@@ -19,22 +19,16 @@ const TILERATIO = 128000;
 /** Default maximum cut size for per-pixel lightcuts (configurable via future slider). */
 let LIGHTCUT_SIZE = 16;
 
-// Number of lights rendered per pass in accumulation mode (now controlled by slider).
-// const LIGHTS_PER_PASS = 10;
-
-// Get current render method
 function getSelectedRenderMethod(): RenderMethod {
   const sel = document.getElementById('render_method_select') as HTMLSelectElement | null;
   return (sel ? sel.value : 'tiles') as RenderMethod;
 }
 
-// Get current rendering type
 function getRenderingType(): RenderingType {
   const sel = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
   return (sel ? sel.value : 'raytrace') as RenderingType;
 }
 
-// Check if ray tracing is enabled
 function isRayTracingEnabled(): boolean {
   const t = getRenderingType();
   return t === 'raytrace' || t === 'lightcuts' || t === 'stochastic_lightcuts';
@@ -50,7 +44,6 @@ interface FullLightsTrainingOptions {
   forceRayTracing?: boolean;
 }
 
-// Run full-lights training: generate numImages with camera on random north hemisphere.
 async function runFullLightsTraining(
   app: GPUApp,
   scene: Scene,
@@ -59,7 +52,6 @@ async function runFullLightsTraining(
 ): Promise<{ times: number[] }> {
   const { onImage = () => { }, forceRayTracing = false } = options;
   console.log('[FullLights] runFullLightsTraining started, numImages =', numImages);
-  // Remove forceful override unless explicitly requested
   if (forceRayTracing) {
     const renderingSelect = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
     if (renderingSelect) renderingSelect.value = 'raytrace';
@@ -74,12 +66,6 @@ async function runFullLightsTraining(
     onImage(i, dataUrl, timeMs);
   }
 
-  /*
-  const renderingSelect = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
-  if (forceRayTracing && renderingSelect) {
-    // renderingSelect.value = wasType; // Don't strive to restore if we simply didn't change it
-  }
-  */
   return { times };
 }
 
@@ -206,7 +192,6 @@ async function renderSceneOneShot(app: GPUApp, scene: Scene): Promise<number> {
   const modeLabel = rtType === 'lightcuts' ? 'Lightcuts' : 'RT';
   console.log(`[Render] Starting image (one-shot ${modeLabel})`, scene.lightSources?.length ?? 0, 'lights');
   updateUniforms(app, scene);
-  // updateDebugUniform(app); // Already set in renderScene
   updateMaterialBuffer(app, scene.materials);
   updateLightSourceBuffer(app, scene.lightSources);
 
@@ -269,7 +254,6 @@ async function renderSceneTiles(app: GPUApp, scene: Scene): Promise<number> {
   const modeLabel = rtType === 'lightcuts' ? 'Lightcuts' : 'RT';
   console.log(`[Render] Starting image (tiled ${modeLabel})`, scene.lightSources?.length ?? 0, 'lights');
   updateUniforms(app, scene);
-  // updateDebugUniform(app); // Already set in renderScene
   updateMaterialBuffer(app, scene.materials);
   updateLightSourceBuffer(app, scene.lightSources);
 
@@ -416,7 +400,6 @@ async function renderSceneAccumulation(app: GPUApp, scene: Scene): Promise<numbe
   console.log(`[Render] Starting accumulation ${modeLabel}:`, totalLights, 'lights,', numPasses, 'passes', 'lights/pass:', lightsPerCurrentPass);
 
   updateUniforms(app, scene);
-  // updateDebugUniform(app); // Already set in renderScene
   updateMaterialBuffer(app, scene.materials);
   updateLightSourceBuffer(app, scene.lightSources);
 
