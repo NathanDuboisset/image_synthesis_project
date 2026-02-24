@@ -48,11 +48,16 @@
           <option value="raytrace">Raytrace</option>
           <option value="lightcuts">Lightcuts</option>
           <option value="stochastic_lightcuts">Stochastic Lightcuts</option>
+          <option value="realtime_stochastic_lightcuts">Realtime Stochastic Lightcuts</option>
         </select>
       </div>
       <div class="sidebar-section">
+        <label for="cut_sharing_tile_size">Tile size: <span id="cut_sharing_tile_size_value">4</span></label>
+        <input type="range" id="cut_sharing_tile_size" min="1" max="10" value="4">
+      </div>
+      <div class="sidebar-section">
         <label for="accumulation_slider">Accumulation:</label>
-        <input type="range" id="accumulation_slider" min="4" max="64" value="4">
+        <input type="range" id="accumulation_slider" min="1" max="16" value="4">
         <span id="accumulation_value">4</span>
       </div>
       <div class="sidebar-section">

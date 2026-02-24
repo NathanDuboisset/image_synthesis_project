@@ -97,7 +97,7 @@ function compressSceneLights(sceneName: string, lightPositions: Vec3[]): Vec3[] 
         0.5 * (p0[2] + p1[2]),
       ]);
     }
-    console.log('[OBJ] Compressed RAM light triangles:', lightPositions.length, '->', compressed.length);
+    console.log('compressed RAM lights:', lightPositions.length, '->', compressed.length);
     return compressed;
   }
   return lightPositions;
@@ -106,11 +106,11 @@ function compressSceneLights(sceneName: string, lightPositions: Vec3[]): Vec3[] 
 // Load OBJ file
 export async function loadOBJScene(sceneName: string, materials: NamedMaterial[] = []): Promise<OBJSceneResult> {
   const url = `data/scenes/${sceneName}/${sceneName}.obj`;
-  console.log('[OBJ] Loading scene from', url);
+  console.log('loading OBJ from', url);
 
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`[OBJ] Failed to load OBJ for scene "${sceneName}": HTTP ${res.status}`);
+    throw new Error(`failed to load OBJ for "${sceneName}": HTTP ${res.status}`);
   }
 
   const text = await res.text();
@@ -122,7 +122,7 @@ export async function loadOBJScene(sceneName: string, materials: NamedMaterial[]
   const meshes: Mesh[] = [];
 
   if (indicesByMaterial.size === 0) {
-    console.warn('[OBJ] Parsed empty geometry (no faces) for scene', sceneName);
+    console.warn('parsed empty geometry for scene', sceneName);
   } else {
     // We need to create separate meshes for each material subset
     // Since positions are shared, we can either duplicate positions for each mesh (simple)
@@ -184,11 +184,10 @@ export async function loadOBJScene(sceneName: string, materials: NamedMaterial[]
     }
 
     console.log(
-      '[OBJ] Parsed scene',
-      sceneName,
-      'meshes =', meshes.length,
-      'total triangles =', Array.from(indicesByMaterial.values()).reduce((a, b) => a + b.length, 0) / 3,
-      'lightTriangles =', lightPositions.length,
+      'parsed', sceneName,
+      '- meshes:', meshes.length,
+      'triangles:', Array.from(indicesByMaterial.values()).reduce((a, b) => a + b.length, 0) / 3,
+      'light triangles:', lightPositions.length,
     );
   }
 
@@ -198,24 +197,24 @@ export async function loadOBJScene(sceneName: string, materials: NamedMaterial[]
 // Load separate lights OBJ if valid
 export async function loadOBJLights(sceneName: string, lightObjName: string = 'lights'): Promise<Vec3[]> {
   const url = `data/scenes/${sceneName}/${lightObjName}.obj`;
-  console.log('[OBJ] Loading separate lights from', url);
+  console.log('loading lights OBJ from', url);
 
   let res: Response;
   try {
     res = await fetch(url);
   } catch (err) {
-    console.warn('[OBJ] Failed to fetch separate lights OBJ for scene', sceneName, err);
+    console.warn('failed to fetch lights OBJ for scene', sceneName, err);
     return [];
   }
 
   if (!res.ok) {
-    console.log('[OBJ] No separate lights OBJ found for scene', sceneName, '- HTTP', res.status);
+    console.log('no lights OBJ for', sceneName, '- HTTP', res.status);
     return [];
   }
 
   const text = await res.text();
   let { lightPositions } = parseOBJ(text);
   lightPositions = compressSceneLights(sceneName, lightPositions);
-  console.log('[OBJ] Parsed separate lights for scene', sceneName, 'count =', lightPositions.length);
+  console.log('lights for', sceneName, ':', lightPositions.length);
   return lightPositions;
 }

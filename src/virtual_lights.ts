@@ -95,7 +95,7 @@ function intersectTriangle(orig: Vec3, dir: Vec3, v0: Vec3, v1: Vec3, v2: Vec3):
 }
 
 export function generateVirtualLights(scene: Scene, sourceLight: LightSource, div: number): LightSource[] {
-    console.log('[VirtualLights] Generating virtual lights (Cube) with div =', div);
+    console.log('generating virtual lights (cube), div =', div);
     const virtualLights: LightSource[] = [];
     const start = performance.now();
 
@@ -204,10 +204,10 @@ export function generateVirtualLights(scene: Scene, sourceLight: LightSource, di
                 }
             }
         }
-        console.log(`[VirtualLights] Face ${face + 1}/6 completed. Total lights so far: ${virtualLights.length}`);
+        console.log(`face ${face + 1}/6 done, lights so far: ${virtualLights.length}`);
     }
 
     const end = performance.now();
-    console.log(`[VirtualLights] Generated ${virtualLights.length} lights in ${(end - start).toFixed(1)}ms`);
+    console.log(`generated ${virtualLights.length} virtual lights in ${(end - start).toFixed(1)}ms`);
     return virtualLights;
 }

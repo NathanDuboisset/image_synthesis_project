@@ -2,12 +2,12 @@
 
 A WebGPU-based renderer implementing Ray Tracing, Lightcuts, and Stochastic Lightcuts.
  
-Interface self explanatory.
+Interface self explanatory, you can change modes to test the different parts of the experiment in 3 tabs : playground to test and see, a tab to test on average to look for the speed results, and a tab to visualize the lightcut tree.
 
 ## How to Run
 
 0. **IF ALREADY BUILT:**
-    - Open `dist/index.html` in a WebGPU-compatible browser (e.g., Chrome, Edge)
+    - Open `dist/index.html` in a WebGPU-compatible browser
 
 1. **IF NOT ALREADY BUILT:**
     ```bash

@@ -1,18 +1,13 @@
 /// <reference types="@webgpu/types" />
 
-// Primitives
-
 export type Vec3 = [number, number, number];
 export type Mat4 = Float32Array;
-
-
 
 export interface Material {
     albedo: Vec3;
     roughness: number;
     metalness: number;
 }
-
 export interface LightSource {
     position: Vec3;
     intensity: number;
@@ -23,9 +18,6 @@ export interface LightSource {
     fixedIntensity?: boolean;
     visibleInRT?: boolean;
 }
-
-
-
 export interface Mesh {
     positions: Float32Array;
     normals: Float32Array;
@@ -45,7 +37,6 @@ export interface Camera {
     aspect: number;
     near: number;
     far: number;
-    // Orbit parameters
     yaw: number;
     pitch: number;
     radius: number;
@@ -55,7 +46,6 @@ export interface Camera {
     zoomSpeed: number;
     minRadius: number;
     maxRadius: number;
-    // Interaction
     lastX?: number;
     lastY?: number;
     dragging?: boolean;
@@ -73,7 +63,6 @@ export interface SceneParams {
     targetY?: number;
     targetZ?: number;
     tileSize?: number;
-    // New params
     defaultLightPos?: string; // "x,y,z"
     defaultLightColor?: string; // "r,g,b"
     defaultLightIntensity?: number;
@@ -82,8 +71,6 @@ export interface SceneParams {
     lightcutVizRadius?: number;
     [key: string]: number | string | boolean | undefined;
 }
-
-
 
 export interface SceneBounds {
     minX: number; minY: number; minZ: number;
@@ -102,7 +89,6 @@ export interface Scene {
 }
 
 
-
 export interface MeshBuffers {
     positionBuffer: GPUBuffer;
     normalBuffer: GPUBuffer;
@@ -118,24 +104,20 @@ export interface GPUApp {
     context: GPUCanvasContext;
     canvasFormat: GPUTextureFormat;
 
-    // Shader & layouts
     shaderModule: GPUShaderModule;
     bindGroupLayout: GPUBindGroupLayout;
     blitBindGroupLayout: GPUBindGroupLayout;
 
-    // Pipelines
     rasterizationPipeline: GPURenderPipeline;
     rayTracingPipeline: GPURenderPipeline;
     blitPipeline: GPURenderPipeline;
     accumBlitPipeline: GPURenderPipeline;
     accumFinalPipeline: GPURenderPipeline;
 
-    // Textures
     depthTexture: GPUTexture;
     offscreenColorTexture: GPUTexture;
     accumTexture: GPUTexture;
 
-    // Buffers
     meshBuffers: MeshBuffers;
     uniformBuffer: GPUBuffer;
     debugUniformBuffer: GPUBuffer;
@@ -143,38 +125,32 @@ export interface GPUApp {
     lightSourceBuffer: GPUBuffer;
     accumFinalUniformBuffer: GPUBuffer;
 
-    // Staging data (CPU-side)
     uniformData: Float32Array;
     debugUniformData: Uint32Array;
     materialStagingBuffer: Float32Array;
     lightSourceStagingBuffer: Float32Array;
     accumFinalUniformData: Float32Array;
 
-    // Bind groups
     bindGroup: GPUBindGroup;
     blitBindGroup: GPUBindGroup;
     blitSampler: GPUSampler;
     accumBlitBindGroup: GPUBindGroup;
     accumFinalBindGroup: GPUBindGroup;
 
-    // Lightcut tree (GPU storage)
     lightcutTreeBuffer: GPUBuffer;
     lightcutTreeNodeCount: number;
+
+    tileCutBuffer: GPUBuffer;
 }
-
-
-
 export interface AABB {
     min: Vec3;
     max: Vec3;
 }
-
 export interface LightcutRepresentative {
     position: Vec3;
     intensity: number;
     color: Vec3;
 }
-
 export interface LightcutNode {
     aabb: AABB;
     representative: LightcutRepresentative;
@@ -186,25 +162,18 @@ export interface LightcutNode {
     lightIndex: number;
 }
 
-
-
 export type RenderMethod = 'tiles' | 'oneshot' | 'accumulation';
-export type RenderingType = 'raster' | 'raytrace' | 'lightcuts' | 'stochastic_lightcuts';
-
-
+export type RenderingType = 'raster' | 'raytrace' | 'lightcuts' | 'stochastic_lightcuts' | 'realtime_stochastic_lightcuts';
 
 export interface ParsedOBJ {
     positions: number[];
     indices: number[];
     lightPositions: Vec3[];
 }
-
 export interface OBJSceneResult {
     meshes: Mesh[];
     lights: Vec3[];
 }
-
-
 
 export interface NamedMaterial extends Material {
     name: string;

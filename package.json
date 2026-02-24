@@ -22,5 +22,8 @@
     "url": "https://github.com/NathanDuboisset/image_synthesis_project/issues"
   },
   "homepage": "https://github.com/NathanDuboisset/image_synthesis_project#readme",
-  "description": ""
+  "description": "",
+  "dependencies": {
+    "js-priority-queue": "^0.1.5"
+  }
 }

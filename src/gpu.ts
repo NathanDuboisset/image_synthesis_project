@@ -73,7 +73,8 @@ export function fillLightSourceStagingBuffer(app: GPUApp, lightSources: LightSou
   const sizeOfLightSource = 12;
   const renderingSelect = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
   const renderingType = (renderingSelect ? renderingSelect.value : 'raytrace') as RenderingType;
-  const useRT = renderingType === 'raytrace' || renderingType === 'lightcuts' || renderingType === 'stochastic_lightcuts';
+  const useRT = renderingType === 'raytrace' || renderingType === 'lightcuts'
+             || renderingType === 'stochastic_lightcuts' || renderingType === 'realtime_stochastic_lightcuts';
 
   for (let i = 0; i < lightSources.length; i++) {
     const l = lightSources[i]!;
@@ -115,11 +116,16 @@ export function initGPUBuffers(app: GPUApp, scene: Scene): void {
   app.uniformBuffer = createGPUBuffer(app.device, app.uniformData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   app.debugUniformBuffer = createGPUBuffer(app.device, app.debugUniformData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
 
-  // Placeholder buffer for lightcut tree
+  // Placeholder buffers
   app.lightcutTreeBuffer = createGPUBuffer(app.device, new Float32Array(16), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   app.lightcutTreeNodeCount = 0;
+  app.tileCutBuffer = createGPUBuffer(app.device, new Uint32Array(33), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
 
-  app.bindGroup = app.device.createBindGroup({
+  app.bindGroup = rebuildBindGroup(app);
+}
+
+function rebuildBindGroup(app: GPUApp): GPUBindGroup {
+  return app.device.createBindGroup({
     layout: app.bindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: app.uniformBuffer } },
@@ -131,12 +137,13 @@ export function initGPUBuffers(app: GPUApp, scene: Scene): void {
       { binding: 6, resource: { buffer: app.lightSourceBuffer } },
       { binding: 7, resource: { buffer: app.debugUniformBuffer } },
       { binding: 8, resource: { buffer: app.lightcutTreeBuffer } },
+      { binding: 9, resource: { buffer: app.tileCutBuffer } },
     ],
   });
 }
 
 export function initRenderPipeline(app: GPUApp, shaderCode: string): void {
-  console.log('[GPU] Creating shader module, code length =', shaderCode.length);
+  console.log('shader module code length =', shaderCode.length);
   app.shaderModule = app.device.createShaderModule({ label: 'Shaders', code: shaderCode });
   app.bindGroupLayout = app.device.createBindGroupLayout({
     entries: [
@@ -149,6 +156,7 @@ export function initRenderPipeline(app: GPUApp, shaderCode: string): void {
       { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
       { binding: 7, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       { binding: 8, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
+      { binding: 9, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
     ],
   });
   app.rasterizationPipeline = app.device.createRenderPipeline({
@@ -199,7 +207,7 @@ export function initRenderPipeline(app: GPUApp, shaderCode: string): void {
     primitive: { topology: 'triangle-list', cullMode: 'back' },
     depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
   });
-  console.log('[GPU] Pipelines and depth texture created');
+  console.log('pipelines created');
 }
 
 // Create accumulation textures and pipelines
@@ -283,7 +291,7 @@ export function initAccumulationResources(app: GPUApp): void {
     ],
   });
 
-  console.log('[GPU] Accumulation resources created');
+  console.log('accum resources created');
 }
 
 export function updateAccumFinalPassCount(app: GPUApp, passCount: number): void {
@@ -293,25 +301,21 @@ export function updateAccumFinalPassCount(app: GPUApp, passCount: number): void 
 
 export async function createGPUApp(): Promise<GPUApp> {
   if (!navigator.gpu) {
-    console.error('[GPU] navigator.gpu not available');
+    console.error('WebGPU not available');
     throw new Error('WebGPU not supported on this browser.');
   }
   const canvas = document.querySelector('canvas') as HTMLCanvasElement;
-  console.log('[GPU] Canvas size:', canvas.width, 'x', canvas.height);
-  const adapter = await navigator.gpu.requestAdapter({
-    powerPreference: 'high-performance'
-  });
+  console.log('canvas size:', canvas.width, 'x', canvas.height);
+  const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) {
-    console.error('[GPU] requestAdapter() returned null');
+    console.error('requestAdapter() returned null');
     throw new Error('No appropriate GPUAdapter found.');
   }
-  console.log('[GPU] Adapter acquired:', adapter);
   const device = await adapter.requestDevice();
-  console.log('[GPU] Device acquired');
   const context = canvas.getContext('webgpu')!;
   const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format: canvasFormat, alphaMode: 'opaque' });
-  console.log('[GPU] Context configured with format', canvasFormat);
+  console.log('canvas format:', canvasFormat);
   return {
     canvas,
     adapter,
@@ -353,37 +357,30 @@ export function updateLightRange(app: GPUApp, startIndex: number, endIndex: numb
 }
 
 // Update debug parameters
-export function updateDebugUniform(app: GPUApp, lightcutNodeCount: number = 0, maxCutSize: number = 0, algorithm: number = 0, fullbright: boolean = false): void {
+export function updateDebugUniform(app: GPUApp, lightcutNodeCount: number = 0, maxCutSize: number = 0, algorithm: number = 0, fullbright: boolean = false, tileSize: number = 1, numTilesX: number = 1): void {
   app.debugUniformData[0] = 0;
   app.debugUniformData[1] = lightcutNodeCount;
   app.debugUniformData[2] = maxCutSize;
   app.debugUniformData[3] = algorithm;
   app.debugUniformData[4] = fullbright ? 1 : 0;
+  app.debugUniformData[5] = tileSize;
+  app.debugUniformData[6] = numTilesX;
+  app.debugUniformData[7] = 0; // padding
   app.device.queue.writeBuffer(app.debugUniformBuffer, 0, app.debugUniformData as unknown as BufferSource);
 }
 
 // Upload tree buffer
 export function uploadLightcutTree(app: GPUApp, treeData: Float32Array, nodeCount: number): void {
-  // Destroy old buffer if any
   if (app.lightcutTreeBuffer) app.lightcutTreeBuffer.destroy();
-
   app.lightcutTreeBuffer = createGPUBuffer(app.device, treeData, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   app.lightcutTreeNodeCount = nodeCount;
+  app.bindGroup = rebuildBindGroup(app);
+  console.log(`lightcut tree uploaded: ${nodeCount} nodes`);
+}
 
-  // Rebind
-  app.bindGroup = app.device.createBindGroup({
-    layout: app.bindGroupLayout,
-    entries: [
-      { binding: 0, resource: { buffer: app.uniformBuffer } },
-      { binding: 1, resource: { buffer: app.meshBuffers.positionBuffer } },
-      { binding: 2, resource: { buffer: app.meshBuffers.normalBuffer } },
-      { binding: 3, resource: { buffer: app.meshBuffers.indexBuffer } },
-      { binding: 4, resource: { buffer: app.meshBuffers.meshBuffer } },
-      { binding: 5, resource: { buffer: app.materialBuffer } },
-      { binding: 6, resource: { buffer: app.lightSourceBuffer } },
-      { binding: 7, resource: { buffer: app.debugUniformBuffer } },
-      { binding: 8, resource: { buffer: app.lightcutTreeBuffer } },
-    ],
-  });
-  console.log(`[GPU] Lightcut tree uploaded: ${nodeCount} nodes, ${treeData.byteLength} bytes`);
+export function uploadTileCuts(app: GPUApp, data: Uint32Array): void {
+  if (app.tileCutBuffer) app.tileCutBuffer.destroy();
+  app.tileCutBuffer = createGPUBuffer(app.device, data, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  app.bindGroup = rebuildBindGroup(app);
+  console.log(`tile cuts uploaded: ${data.byteLength} bytes`);
 }

@@ -6,7 +6,7 @@ import { loadOBJScene, loadOBJLights } from './objLoader.ts';
 
 async function loadMaterialsFromMTL(sceneName: string): Promise<NamedMaterial[]> {
   const url = `data/scenes/${sceneName}/${sceneName}.mtl`;
-  console.log('[Scene] Loading materials from', url);
+  console.log('loading materials from', url);
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -44,7 +44,7 @@ async function loadMaterialsFromMTL(sceneName: string): Promise<NamedMaterial[]>
     }
 
     if (!materialsWithNames.length) {
-      console.warn('[Scene] No non-light materials found in MTL, using default.');
+      console.warn('no non-light materials found in MTL, using default');
       materialsWithNames.push({
         name: 'Default',
         albedo: [0.8, 0.8, 0.8],
@@ -53,10 +53,10 @@ async function loadMaterialsFromMTL(sceneName: string): Promise<NamedMaterial[]>
       });
     }
 
-    console.log('[Scene] Parsed MTL materials:', materialsWithNames);
+    console.log('MTL materials:', materialsWithNames);
     return materialsWithNames;
   } catch (err) {
-    console.error('[Scene] Failed to load MTL materials, using fallback.', err);
+    console.error('failed to load MTL materials, using fallback:', err);
     return [{
       name: 'Default',
       albedo: [0.8, 0.8, 0.8],
@@ -221,10 +221,10 @@ async function loadVirtualLights(sceneName: string): Promise<LightSource[]> {
         });
       }
     }
-    console.log(`[Scene] Loaded ${lights.length} virtual lights from vlights.txt`);
+    console.log(`loaded ${lights.length} virtual lights from vlights.txt`);
     return lights;
   } catch (e) {
-    console.warn('[Scene] Failed to load vlights.txt', e);
+    console.warn('failed to load vlights.txt', e);
     return [];
   }
 }
@@ -259,7 +259,7 @@ function applyCameraConfigRadius(scene: Scene): void {
 function debugLightsAtPoint(label: string, scene: Scene, point: Vec3): void {
   const lights = scene.lightSources || [];
   if (!lights.length) {
-    console.log('[Scene][DebugLights]', label, 'no lights');
+    console.log('debugLights', label, 'no lights');
     return;
   }
   let inCone = 0;
@@ -287,7 +287,7 @@ function debugLightsAtPoint(label: string, scene: Scene, point: Vec3): void {
     sumContribution += contrib;
     if (contrib > maxContribution) maxContribution = contrib;
   }
-  console.log('[Scene][DebugLights]', label, {
+  console.log('debugLights', label, {
     totalLights: lights.length,
     inCone,
     sumContribution,
@@ -370,7 +370,7 @@ function addDebugLightMeshes(scene: Scene): void {
     });
   }
 
-  console.log('[Scene] Added debug light meshes:', scene.meshes.length - (scene.baseMeshCount ?? 0));
+  console.log('added debug light meshes:', scene.meshes.length - (scene.baseMeshCount ?? 0));
 }
 
 function getSceneCenterAndRadius(meshes: Mesh[]): { center: Vec3; radius: number } | null {
@@ -418,7 +418,7 @@ export function setCameraRandomNorthHemisphere(scene: Scene): void {
 }
 
 export async function createScene(camAspect: number, sceneName: string = 'ram'): Promise<Scene> {
-  console.log('[Scene] createScene start, aspect =', camAspect, 'sceneName =', sceneName);
+  console.log('creating scene:', sceneName, 'aspect =', camAspect);
   const scene: Scene = {
     camera: createCamera(camAspect),
     meshes: [],
@@ -433,7 +433,7 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
 
   if (params) {
     if (params.defaultLightPos) {
-      console.log('[Scene] Using default light from params');
+      console.log('using default light from params');
       const posParts = params.defaultLightPos.split(',').map(Number);
       const colorParts = params.defaultLightColor ? params.defaultLightColor.split(',').map(Number) : [1, 1, 1];
       const intensity = params.defaultLightIntensity ?? 1.0;
@@ -449,7 +449,7 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
           fixedIntensity: true,
           visibleInRT: params.do_virtual ?? false,
         });
-        console.log(`[Scene] Default light added. visibleInRT: ${params.do_virtual ?? false}`);
+        console.log(`default light added, visibleInRT: ${params.do_virtual ?? false}`);
       }
     }
   }
@@ -474,21 +474,21 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
   try {
     const separateLights = await loadOBJLights(sceneName, 'lights');
     if (separateLights && separateLights.length > 0) {
-      console.log('[Scene] Using lights from separate OBJ file for scene', sceneName);
+      console.log('using lights from separate OBJ for', sceneName);
       objLights = separateLights;
     }
   } catch (err) {
-    console.warn('[Scene] Failed to load separate lights OBJ for scene', sceneName, err);
+    console.warn('failed to load separate lights OBJ for', sceneName, err);
   }
 
   // Load virtual lights if enabled, otherwise fallback
   if (scene.params && scene.params.do_virtual) {
     const vlights = await loadVirtualLights(sceneName);
     if (vlights.length > 0) {
-      console.log(`[Scene] Loaded ${vlights.length} virtual lights from vlights.txt. Replacing default lights.`);
+      console.log(`loaded ${vlights.length} virtual lights, replacing default lights`);
       scene.lightSources = vlights;
     } else {
-      console.warn('[Scene] do_virtual is true but failed to load vlights.txt (or empty).');
+      console.warn('do_virtual is set but vlights.txt is empty or missing');
     }
   } else if (objLights.length > 0 && bounds) {
     if (sceneName === 'ram') {
@@ -510,7 +510,7 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
         });
         added++;
       }
-      console.log('[Scene] Added RAM OBJ lights from RamLight faces:', added, 'total lights =', scene.lightSources.length);
+      console.log('added', added, 'RAM lights, total:', scene.lightSources.length);
     }
     // Note: older logic for 'do_virtual' with OBJ lights is removed in favor of vlights.txt
   } else if (bounds && scene.lightSources.length === 0) {
@@ -529,7 +529,7 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
       angle: 0.5,
       useRaytracedShadows: true,
     });
-    console.log('[Scene] Added fallback light above scene center, total lights =', scene.lightSources.length);
+    console.log('added fallback light, total lights:', scene.lightSources.length);
   }
 
   fitCameraToScene(scene);
@@ -537,7 +537,7 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
   // Apply camera config from params
   if (scene.params) {
     applyCameraConfig(scene, scene.params);
-    console.log('[Scene] Applied camera config from params');
+    console.log('applied camera config from params');
   }
 
   // Normalize light intensities
@@ -558,7 +558,7 @@ export async function createScene(camAspect: number, sceneName: string = 'ram'):
   addDebugLightMeshes(scene);
   scene.time = 0;
   debugLights(scene);
-  console.log('[Scene] Scene created:', {
+  console.log('scene created:', {
     camera: scene.camera,
     numMeshes: scene.meshes.length,
     numLights: scene.lightSources.length,

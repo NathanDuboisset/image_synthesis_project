@@ -53,6 +53,9 @@ struct DebugParams {
   maxCutSize: u32,
   algorithm: u32,
   fullbright: u32,
+  tileSize: u32,
+  numTilesX: u32,
+  _pad: u32,
 };
 
 @group(0) @binding(0) var<uniform> scene : Scene;
@@ -66,17 +69,21 @@ struct DebugParams {
 @group(0) @binding(7) var<uniform> debugParams : DebugParams;
 
 struct LightcutGPUNode {
-  position: vec3<f32>,     // representative position (world space)
-  intensity: f32,          // cluster totalIntensity
-  color: vec3<f32>,        // representative color
-  lightCount: f32,         // number of leaves under this node
+  position: vec3<f32>,
+  intensity: f32,
+  color: vec3<f32>,
+  lightCount: f32,
   aabbMin: vec3<f32>,
-  leftChild: f32,          // BFS index, -1 = leaf
+  leftChild: f32,   // -1 = leaf
   aabbMax: vec3<f32>,
-  rightChild: f32,         // BFS index, -1 = leaf
+  rightChild: f32,  // -1 = leaf
 };
 
 @group(0) @binding(8) var<storage, read> lightcutTree : array<LightcutGPUNode>;
+
+// Tile cut buffer: stride = 1 + LC_MAX_CUT u32s per tile. [0]=cutSize, [1..]=nodeIndices.
+const TILE_CUT_STRIDE = 33u;
+@group(0) @binding(9) var<storage, read> tileCutBuffer : array<u32>;
 
 struct RasterVertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -470,13 +477,99 @@ fn rand(seed: ptr<function, u32>) -> f32 {
     return f32(*seed) / 4294967296.0;
 }
 
-// Importance weight for stochastic traversal: always positive, including for leaf nodes.
-// Unlike lightcutErrorBound (which uses AABB diagonal and zeroes out leaves),
-// this uses intensity/distSq so every node has a nonzero probability of being sampled.
-fn stochasticWeight(node: LightcutGPUNode, worldPos: vec3f) -> f32 {
-    let L = node.position - worldPos;
-    let distSq = dot(L, L) + 0.001;
-    return node.intensity / distSq;
+fn distToAABB(p: vec3f, bmin: vec3f, bmax: vec3f) -> f32 {
+    let d = max(vec3f(0.0), max(bmin - p, p - bmax));
+    return length(d);
+}
+
+fn dMaxToAABB(p: vec3f, bmin: vec3f, bmax: vec3f) -> f32 {
+    return length(max(abs(p - bmin), abs(p - bmax)));
+}
+
+// Algorithm 1 from Yuksel 2019: hierarchical importance sampling within a subtree.
+// Returns vec2f(f32(leafNodeIdx), selectionProbability), or vec2f(-1.0, p) on dead branch.
+fn selectLight(rootIdx: u32, worldPos: vec3f, nodeCount: u32,
+               seed: ptr<function, u32>) -> vec2f {
+    var nodeId = rootIdx;
+    var p = 1.0;
+    var r = rand(seed);
+    for (var depth = 0u; depth < 64u; depth++) {
+        let node   = lightcutTree[nodeId];
+        let leftI  = i32(node.leftChild);
+        let rightI = i32(node.rightChild);
+        if (leftI < 0 && rightI < 0) { return vec2f(f32(nodeId), p); }
+
+        let lNode = lightcutTree[u32(leftI)];
+        let rNode = lightcutTree[u32(rightI)];
+        let dminL = distToAABB(worldPos, lNode.aabbMin, lNode.aabbMax);
+        let dminR = distToAABB(worldPos, rNode.aabbMin, rNode.aabbMax);
+        let diagL = length(lNode.aabbMax - lNode.aabbMin);
+        let diagR = length(rNode.aabbMax - rNode.aabbMin);
+
+        var wL: f32; var wR: f32;
+        if (dminL > diagL && dminR > diagR) {
+            wL = lNode.intensity / (dminL * dminL);
+            wR = rNode.intensity / (dminR * dminR);
+        } else {
+            wL = lNode.intensity;
+            wR = rNode.intensity;
+        }
+
+        let sumW = wL + wR;
+        if (sumW <= 0.0) { return vec2f(-1.0, p); }
+
+        let p1 = wL / sumW;
+        if (r < p1) {
+            p *= p1; r /= p1; nodeId = u32(leftI);
+        } else {
+            p *= (1.0 - p1); r = (r - p1) / (1.0 - p1); nodeId = u32(rightI);
+        }
+    }
+    return vec2f(f32(nodeId), p);
+}
+
+// Lin & Yuksel 2020 (Section 3.2): weight = average of pmin (1/dmin²) and pmax (1/dmax²).
+fn selectLightRT(rootIdx: u32, worldPos: vec3f, nodeCount: u32,
+                 seed: ptr<function, u32>) -> vec2f {
+    var nodeId = rootIdx;
+    var p = 1.0;
+    var r = rand(seed);
+    for (var depth = 0u; depth < 64u; depth++) {
+        let node   = lightcutTree[nodeId];
+        let leftI  = i32(node.leftChild);
+        let rightI = i32(node.rightChild);
+        if (leftI < 0 && rightI < 0) { return vec2f(f32(nodeId), p); }
+
+        let lNode = lightcutTree[u32(leftI)];
+        let rNode = lightcutTree[u32(rightI)];
+        let sumI = lNode.intensity + rNode.intensity;
+        if (sumI <= 0.0) { return vec2f(-1.0, p); }
+
+        let dminL = distToAABB(worldPos, lNode.aabbMin, lNode.aabbMax);
+        let dminR = distToAABB(worldPos, rNode.aabbMin, rNode.aabbMax);
+        let dmaxL = dMaxToAABB(worldPos, lNode.aabbMin, lNode.aabbMax);
+        let dmaxR = dMaxToAABB(worldPos, rNode.aabbMin, rNode.aabbMax);
+
+        var pMinL: f32;
+        if (dminL <= 0.0 && dminR <= 0.0) {
+            pMinL = lNode.intensity / sumI;
+        } else {
+            let wML = lNode.intensity / (dminL * dminL + 1e-8);
+            let wMR = rNode.intensity / (dminR * dminR + 1e-8);
+            pMinL = wML / (wML + wMR);
+        }
+        let wXL = lNode.intensity / (dmaxL * dmaxL + 1e-8);
+        let wXR = rNode.intensity / (dmaxR * dmaxR + 1e-8);
+        let pMaxL = wXL / (wXL + wXR);
+        let p1 = (pMinL + pMaxL) * 0.5;
+
+        if (r < p1) {
+            p *= p1; r /= p1; nodeId = u32(leftI);
+        } else {
+            p *= (1.0 - p1); r = (r - p1) / (1.0 - p1); nodeId = u32(rightI);
+        }
+    }
+    return vec2f(f32(nodeId), p);
 }
 
 fn computeRadianceStochasticLightcuts(
@@ -489,61 +582,92 @@ fn computeRadianceStochasticLightcuts(
   screenPos: vec2f
 ) -> vec3f {
   let nodeCount = debugParams.lightcutNodeCount;
-  if (nodeCount == 0u) {
-    return vec3f(0.0);
-  }
+  let maxCut    = min(debugParams.maxCutSize, LC_MAX_CUT);
+  if (nodeCount == 0u) { return vec3f(0.0); }
 
   var seed = pcg_hash(u32(screenPos.x * 1000.0) ^ u32(screenPos.y * 1000.0) ^ u32(scene.frameCount));
 
-  var radiance = vec3f(0.0);
-  let numSamples = max(1u, debugParams.maxCutSize);
+  // Phase 1: build cut (identical to computeRadianceLightcuts)
+  var cutIdx:   array<u32, 32>;
+  var cutError: array<f32, 32>;
+  var cutSize = 0u;
+  cutIdx[0]   = 0u;
+  cutError[0] = lightcutErrorBound(lightcutTree[0], worldPos);
+  cutSize     = 1u;
 
-  for (var s = 0u; s < numSamples; s++) {
-      var nodeId = 0u; // Start at root
-      var pdf = 1.0;
-      var depth = 0u;
-
-      loop {
-          let node = lightcutTree[nodeId];
-          let leftI = i32(node.leftChild);
-          let rightI = i32(node.rightChild);
-          let isLeaf = leftI < 0 && rightI < 0;
-
-          if (isLeaf) {
-              let val = shadeLightcutNode(node, worldPos, worldNormal, viewPos, viewNormal, materialIndex, wo);
-              radiance += val / pdf;
-              break;
-          }
-
-          var wL = 0.0;
-          var wR = 0.0;
-          if (leftI >= 0 && u32(leftI) < nodeCount) {
-              wL = stochasticWeight(lightcutTree[u32(leftI)], worldPos);
-          }
-          if (rightI >= 0 && u32(rightI) < nodeCount) {
-              wR = stochasticWeight(lightcutTree[u32(rightI)], worldPos);
-          }
-
-          let sumW = wL + wR;
-          var probL = 0.5;
-          if (sumW > 1e-9) {
-              probL = wL / sumW;
-          }
-
-          if (rand(&seed) < probL) {
-              if (leftI >= 0) { nodeId = u32(leftI); } else { break; }
-              pdf *= probL;
-          } else {
-              if (rightI >= 0) { nodeId = u32(rightI); } else { break; }
-              pdf *= (1.0 - probL);
-          }
-
-          depth = depth + 1u;
-          if (depth > 64u) { break; }
-      }
+  for (var iter = 0u; iter < 256u; iter++) {
+    if (cutSize >= maxCut) { break; }
+    var worstIdx = 0u; var worstErr = -1.0;
+    for (var c = 0u; c < cutSize; c++) {
+      if (cutError[c] > worstErr) { worstErr = cutError[c]; worstIdx = c; }
+    }
+    let nodeId = cutIdx[worstIdx];
+    let node   = lightcutTree[nodeId];
+    let leftI  = i32(node.leftChild);
+    let rightI = i32(node.rightChild);
+    if (leftI < 0 && rightI < 0) { break; }
+    if (leftI >= 0 && u32(leftI) < nodeCount) {
+      cutIdx[worstIdx]   = u32(leftI);
+      cutError[worstIdx] = lightcutErrorBound(lightcutTree[u32(leftI)], worldPos);
+    } else { cutError[worstIdx] = 0.0; }
+    if (rightI >= 0 && u32(rightI) < nodeCount && cutSize < LC_MAX_CUT) {
+      cutIdx[cutSize]   = u32(rightI);
+      cutError[cutSize] = lightcutErrorBound(lightcutTree[u32(rightI)], worldPos);
+      cutSize += 1u;
+    }
   }
 
-  return radiance / f32(numSamples);
+  // Phase 2: one HIS sample per cut node, contributions summed (no averaging)
+  var color = vec3f(0.0);
+  for (var c = 0u; c < cutSize; c++) {
+    let res  = selectLight(cutIdx[c], worldPos, nodeCount, &seed);
+    let leaf = i32(res.x);
+    let prob = res.y;
+    if (leaf >= 0 && prob > 0.0) {
+      color += shadeLightcutNode(lightcutTree[u32(leaf)],
+                                 worldPos, worldNormal, viewPos, viewNormal,
+                                 materialIndex, wo) / prob;
+    }
+  }
+  return color;
+}
+
+// Phase 2 only: reads CPU-prebuilt tile cut, runs HIS with Lin 2020 weights (selectLightRT).
+fn computeRadianceRealtimeStochasticLightcuts(
+  worldPos: vec3f,
+  worldNormal: vec3f,
+  viewPos: vec3f,
+  viewNormal: vec3f,
+  materialIndex: u32,
+  wo: vec3f,
+  screenPos: vec2f
+) -> vec3f {
+  let nodeCount = debugParams.lightcutNodeCount;
+  if (nodeCount == 0u) { return vec3f(0.0); }
+
+  let tileSize = max(1u, debugParams.tileSize);
+  let numTilesX = max(1u, debugParams.numTilesX);
+  let tileX = u32(screenPos.x) / tileSize;
+  let tileY = u32(screenPos.y) / tileSize;
+  let tileIdx = tileY * numTilesX + tileX;
+  let base = tileIdx * TILE_CUT_STRIDE;
+  let cutSize = min(tileCutBuffer[base], LC_MAX_CUT);
+
+  var seed = pcg_hash(u32(screenPos.x * 1000.0) ^ u32(screenPos.y * 1000.0) ^ u32(scene.frameCount));
+
+  var color = vec3f(0.0);
+  for (var c = 0u; c < cutSize; c++) {
+    let nodeIdx = tileCutBuffer[base + 1u + c];
+    let res  = selectLightRT(nodeIdx, worldPos, nodeCount, &seed);
+    let leaf = i32(res.x);
+    let prob = res.y;
+    if (leaf >= 0 && prob > 0.0) {
+      color += shadeLightcutNode(lightcutTree[u32(leaf)],
+                                 worldPos, worldNormal, viewPos, viewNormal,
+                                 materialIndex, wo) / prob;
+    }
+  }
+  return color;
 }
 
 fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
@@ -590,6 +714,10 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
   if (debugParams.lightcutNodeCount > 0u) {
     if (debugParams.algorithm == 1u) {
        outputColor = computeRadianceStochasticLightcuts(
+         worldPos, worldNormal, viewPos, viewNormal, mesh.materialIndex, wo, fragCoord.xy
+       );
+    } else if (debugParams.algorithm == 2u) {
+       outputColor = computeRadianceRealtimeStochasticLightcuts(
          worldPos, worldNormal, viewPos, viewNormal, mesh.materialIndex, wo, fragCoord.xy
        );
     } else {

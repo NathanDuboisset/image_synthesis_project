@@ -5,11 +5,11 @@ import {
   updateMaterialBuffer, updateLightSourceBuffer, updateDebugUniform,
   initAccumulationResources, updateLightRange, updateAccumFinalPassCount,
   createMeshBuffers, createMaterialBuffer, createLightSourceBuffer, createGPUBuffer,
-  uploadLightcutTree,
+  uploadLightcutTree, uploadTileCuts,
 } from './gpu.ts';
 import { pan, updateCamera } from './camera.ts';
 import { mat4Invert, mat4Transpose } from './math.ts';
-import { buildLightcutTreeBruteForce, buildLightcutTreeKDTree, getNodesAtDepth, getTreeMaxDepth, flattenTreeForGPU } from './lightcutTree.ts';
+import { buildLightcutTreeBruteForce, buildLightcutTreeKDTree, getNodesAtDepth, getTreeMaxDepth, flattenTreeForGPU, buildPerfectBinaryTreeForGPU, buildCutsForTiles } from './lightcutTree.ts';
 import { createBBoxMeshes, createIntensityMaterials } from './lightcutViz.ts';
 
 // Tile ratio controlling ray-tracing tile size vs. light count:
@@ -29,9 +29,15 @@ function getRenderingType(): RenderingType {
   return (sel ? sel.value : 'raytrace') as RenderingType;
 }
 
+function getTileSize(): number {
+  const sl = document.getElementById('cut_sharing_tile_size') as HTMLInputElement | null;
+  return sl ? Math.max(1, parseInt(sl.value, 10)) : 4;
+}
+
 function isRayTracingEnabled(): boolean {
   const t = getRenderingType();
-  return t === 'raytrace' || t === 'lightcuts' || t === 'stochastic_lightcuts';
+  return t === 'raytrace' || t === 'lightcuts' || t === 'stochastic_lightcuts'
+      || t === 'realtime_stochastic_lightcuts';
 }
 
 /** Get the current canvas content as a data URL. */
@@ -39,19 +45,14 @@ function getCanvasDataURL(canvas: HTMLCanvasElement): string {
   return canvas.toDataURL('image/png');
 }
 
-interface FullLightsTrainingOptions {
-  onImage?: (index: number, dataUrl: string, timeMs: number) => void;
-  forceRayTracing?: boolean;
-}
-
 async function runFullLightsTraining(
   app: GPUApp,
   scene: Scene,
   numImages: number,
-  options: FullLightsTrainingOptions = {},
+  onImage: (index: number, dataUrl: string, timeMs: number) => void = () => {},
 ): Promise<{ times: number[] }> {
-  const { onImage = () => { }, forceRayTracing = false } = options;
-  console.log('[FullLights] runFullLightsTraining started, numImages =', numImages);
+  const forceRayTracing = false;
+  console.log('runFullLightsTraining started, numImages =', numImages);
   if (forceRayTracing) {
     const renderingSelect = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
     if (renderingSelect) renderingSelect.value = 'raytrace';
@@ -65,7 +66,6 @@ async function runFullLightsTraining(
     const dataUrl = getCanvasDataURL(app.canvas);
     onImage(i, dataUrl, timeMs);
   }
-
   return { times };
 }
 
@@ -119,15 +119,22 @@ async function renderScene(app: GPUApp, scene: Scene): Promise<number> {
   const fullbrightCheckbox = document.getElementById('fullbright_checkbox') as HTMLInputElement | null;
   const isFullbright = fullbrightCheckbox ? fullbrightCheckbox.checked : false;
 
-  if (renderingType === 'lightcuts' || renderingType === 'stochastic_lightcuts') {
+  if (renderingType === 'lightcuts' || renderingType === 'stochastic_lightcuts'
+      || renderingType === 'realtime_stochastic_lightcuts') {
     if (!app.lightcutTreeBuffer || app.lightcutTreeNodeCount === 0) {
-      console.error('[Lightcuts] Cannot render: no lightcut tree built/uploaded. Build one in the Lightcut Tree tab first.');
+      console.error('lightcuts selected but no tree built/uploaded');
       alert('Error: Lightcuts selected but no tree built. Please build a lightcut tree first.');
       return 0;
     }
-    const algorithm = renderingType === 'stochastic_lightcuts' ? 1 : 0;
-    // Disable fullbright for RT modes as requested ("raster mode ONLY")
-    updateDebugUniform(app, app.lightcutTreeNodeCount, LIGHTCUT_SIZE, algorithm, false);
+    const algorithm = renderingType === 'stochastic_lightcuts' ? 1
+                    : renderingType === 'realtime_stochastic_lightcuts' ? 2 : 0;
+    if (algorithm === 2) {
+      const tileSize = getTileSize();
+      const numTilesX = Math.ceil(app.canvas.width / tileSize);
+      updateDebugUniform(app, app.lightcutTreeNodeCount, LIGHTCUT_SIZE, algorithm, false, tileSize, numTilesX);
+    } else {
+      updateDebugUniform(app, app.lightcutTreeNodeCount, LIGHTCUT_SIZE, algorithm, false);
+    }
   } else {
     // Disable for normal RT too
     updateDebugUniform(app, 0, 0, 0, false);
@@ -190,7 +197,7 @@ async function renderSceneOneShot(app: GPUApp, scene: Scene): Promise<number> {
   const start = performance.now();
   const rtType = getRenderingType();
   const modeLabel = rtType === 'lightcuts' ? 'Lightcuts' : 'RT';
-  console.log(`[Render] Starting image (one-shot ${modeLabel})`, scene.lightSources?.length ?? 0, 'lights');
+  console.log(`Starting one-shot ${modeLabel}, lights:`, scene.lightSources?.length ?? 0);
   updateUniforms(app, scene);
   updateMaterialBuffer(app, scene.materials);
   updateLightSourceBuffer(app, scene.lightSources);
@@ -241,7 +248,7 @@ async function renderSceneOneShot(app: GPUApp, scene: Scene): Promise<number> {
 
   const end = performance.now();
   const frameMs = end - start;
-  console.log('[Render] One-shot frame in', frameMs.toFixed(3), 'ms');
+  console.log('one-shot frame:', frameMs.toFixed(3), 'ms');
   const label = document.getElementById('render_time_label');
   if (label) label.textContent = `${frameMs.toFixed(3)} ms`;
   return frameMs;
@@ -252,7 +259,7 @@ async function renderSceneTiles(app: GPUApp, scene: Scene): Promise<number> {
   const start = performance.now();
   const rtType = getRenderingType();
   const modeLabel = rtType === 'lightcuts' ? 'Lightcuts' : 'RT';
-  console.log(`[Render] Starting image (tiled ${modeLabel})`, scene.lightSources?.length ?? 0, 'lights');
+  console.log(`Starting tiled ${modeLabel}, lights:`, scene.lightSources?.length ?? 0);
   updateUniforms(app, scene);
   updateMaterialBuffer(app, scene.materials);
   updateLightSourceBuffer(app, scene.lightSources);
@@ -353,19 +360,12 @@ async function renderSceneTiles(app: GPUApp, scene: Scene): Promise<number> {
 
   if (tileTimes.length > 0) {
     const totalTileMs = tileTimes.reduce((acc, t) => acc + t, 0);
-    const meanTileMs = totalTileMs / tileCount;
-    let variance = 0;
-    for (let i = 0; i < tileCount; i++) {
-      const d = (tileTimes[i] ?? 0) - meanTileMs;
-      variance += d * d;
-    }
-    variance /= tileCount;
-    console.log('[Render][Tiles] total time =', totalTileMs.toFixed(3), 'ms, tiles =', tileCount, ', mean =', meanTileMs.toFixed(3), 'ms, variance =', variance.toFixed(3), 'ms^2');
+    console.log('tiles done:', tileCount, 'tiles,', totalTileMs.toFixed(1), 'ms total');
   }
 
   const end = performance.now();
   const frameMs = end - start;
-  console.log('[Render] Tiled frame in', frameMs.toFixed(3), 'ms');
+  console.log('tiled frame:', frameMs.toFixed(3), 'ms');
   const label = document.getElementById('render_time_label');
   if (label) label.textContent = `${frameMs.toFixed(3)} ms`;
   return frameMs;
@@ -384,9 +384,8 @@ async function renderSceneAccumulation(app: GPUApp, scene: Scene): Promise<numbe
   let numPasses = 1;
   let lightsPerCurrentPass = totalLights;
 
-  if (rtType === 'stochastic_lightcuts') {
+  if (rtType === 'stochastic_lightcuts' || rtType === 'realtime_stochastic_lightcuts') {
     numPasses = accumCount;
-    // For stochastic, we use all lights every pass (but sampled via tree)
     lightsPerCurrentPass = totalLights;
   } else if (rtType === 'lightcuts') {
     numPasses = 1;
@@ -397,7 +396,7 @@ async function renderSceneAccumulation(app: GPUApp, scene: Scene): Promise<numbe
     lightsPerCurrentPass = Math.ceil(totalLights / Math.max(1, numPasses));
   }
 
-  console.log(`[Render] Starting accumulation ${modeLabel}:`, totalLights, 'lights,', numPasses, 'passes', 'lights/pass:', lightsPerCurrentPass);
+  console.log(`accumulation ${modeLabel}:`, totalLights, 'lights,', numPasses, 'passes');
 
   updateUniforms(app, scene);
   updateMaterialBuffer(app, scene.materials);
@@ -430,15 +429,13 @@ async function renderSceneAccumulation(app: GPUApp, scene: Scene): Promise<numbe
     let lightStart = 0;
     let lightEnd = totalLights;
 
-    if (rtType !== 'stochastic_lightcuts' && rtType !== 'lightcuts') {
+    if (rtType !== 'stochastic_lightcuts' && rtType !== 'realtime_stochastic_lightcuts' && rtType !== 'lightcuts') {
       lightStart = p * lightsPerCurrentPass;
       lightEnd = Math.min(lightStart + lightsPerCurrentPass, totalLights);
     }
 
-    if (rtType === 'stochastic_lightcuts') {
-      // Increment time/frame count for different noise seed each pass
+    if (rtType === 'stochastic_lightcuts' || rtType === 'realtime_stochastic_lightcuts') {
       scene.time = (scene.time || 0) + 1;
-      // We must update the uniform buffer to push the new time
       updateUniforms(app, scene);
     } else {
       updateLightRange(app, lightStart, lightEnd);
@@ -517,20 +514,337 @@ async function renderSceneAccumulation(app: GPUApp, scene: Scene): Promise<numbe
 
   const end = performance.now();
   const frameMs = end - start;
-  console.log('[Render] Accumulation frame in', frameMs.toFixed(3), 'ms (', numPasses, 'passes)');
+  console.log('accumulation frame:', frameMs.toFixed(3), 'ms,', numPasses, 'passes');
   const label = document.getElementById('render_time_label');
   if (label) label.textContent = `${frameMs.toFixed(3)} ms`;
   return frameMs;
 }
 
+// ---------------------------------------------------------------------------
+// Experiment helpers
+// ---------------------------------------------------------------------------
+
+/** Read pixel data from the WebGPU canvas by drawing it onto a temporary 2D canvas. */
+function getCanvasPixels(canvas: HTMLCanvasElement): ImageData {
+  const tmp = document.createElement('canvas');
+  tmp.width = canvas.width;
+  tmp.height = canvas.height;
+  const ctx = tmp.getContext('2d')!;
+  ctx.drawImage(canvas, 0, 0);
+  return ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+/** Compute normalised MSE between two ImageData objects (RGB channels, [0,1] range). */
+function computeMSE(a: ImageData, b: ImageData): number {
+  let sum = 0;
+  const n = a.data.length / 4;
+  for (let i = 0; i < a.data.length; i += 4) {
+    const dr = (a.data[i]! - b.data[i]!) / 255;
+    const dg = (a.data[i + 1]! - b.data[i + 1]!) / 255;
+    const db = (a.data[i + 2]! - b.data[i + 2]!) / 255;
+    sum += dr * dr + dg * dg + db * db;
+  }
+  return sum / (n * 3);
+}
+
+interface ChartSeries {
+  label: string;
+  color: string;
+  data: { x: number; y: number }[];
+}
+
+/** Draw a multi-series line chart (dark theme) onto the given canvas. */
+function drawMSEChart(canvas: HTMLCanvasElement, seriesList: ChartSeries[]): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const W = canvas.width;
+  const H = canvas.height;
+  const pad = { top: 28, right: 24, bottom: 48, left: 72 };
+
+  ctx.fillStyle = '#18181b';
+  ctx.fillRect(0, 0, W, H);
+
+  const allData = seriesList.flatMap(s => s.data);
+  if (allData.length === 0) {
+    ctx.fillStyle = '#52525b';
+    ctx.font = '13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No data yet', W / 2, H / 2);
+    return;
+  }
+
+  const minX = Math.min(...allData.map(p => p.x));
+  const maxX = Math.max(...allData.map(p => p.x));
+  const rawMaxY = Math.max(...allData.map(p => p.y));
+  const maxY = rawMaxY > 0 ? rawMaxY * 1.1 : 1;
+
+  const chartW = W - pad.left - pad.right;
+  const chartH = H - pad.top - pad.bottom;
+
+  const toX = (x: number) => pad.left + (maxX === minX ? chartW / 2 : (x - minX) / (maxX - minX) * chartW);
+  const toY = (y: number) => pad.top + chartH - (y / maxY) * chartH;
+
+  // Horizontal grid lines + Y labels
+  const yTicks = 5;
+  ctx.font = '10px system-ui, sans-serif';
+  for (let i = 0; i <= yTicks; i++) {
+    const y = (maxY) * i / yTicks;
+    const sy = toY(y);
+    ctx.strokeStyle = '#27272a';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, sy);
+    ctx.lineTo(pad.left + chartW, sy);
+    ctx.stroke();
+    ctx.fillStyle = '#71717a';
+    ctx.textAlign = 'right';
+    ctx.fillText(y.toExponential(2), pad.left - 7, sy + 3.5);
+  }
+
+  // X axis ticks + labels
+  const xValues = [...new Set(allData.map(p => p.x))].sort((a, b) => a - b);
+  ctx.textAlign = 'center';
+  for (const x of xValues) {
+    const sx = toX(x);
+    ctx.strokeStyle = '#3f3f46';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(sx, pad.top + chartH);
+    ctx.lineTo(sx, pad.top + chartH + 4);
+    ctx.stroke();
+    ctx.fillStyle = '#71717a';
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.fillText(String(x), sx, pad.top + chartH + 15);
+  }
+
+  // Axes
+  ctx.strokeStyle = '#3f3f46';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad.left, pad.top);
+  ctx.lineTo(pad.left, pad.top + chartH);
+  ctx.lineTo(pad.left + chartW, pad.top + chartH);
+  ctx.stroke();
+
+  // Axis labels
+  ctx.fillStyle = '#52525b';
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Accumulation count', pad.left + chartW / 2, H - 6);
+  ctx.save();
+  ctx.translate(13, pad.top + chartH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('MSE', 0, 0);
+  ctx.restore();
+
+  // Series lines + points
+  for (const series of seriesList) {
+    if (series.data.length === 0) continue;
+    const pts = [...series.data].sort((a, b) => a.x - b.x);
+
+    // Line
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    pts.forEach((pt, i) => {
+      const sx = toX(pt.x);
+      const sy = toY(pt.y);
+      if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    });
+    ctx.stroke();
+
+    // Points
+    ctx.fillStyle = series.color;
+    for (const pt of pts) {
+      ctx.beginPath();
+      ctx.arc(toX(pt.x), toY(pt.y), 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Legend
+  const visibleSeries = seriesList.filter(s => s.data.length > 0);
+  if (visibleSeries.length > 0) {
+    let lx = pad.left + 8;
+    const ly = pad.top + 13;
+    ctx.font = '10px system-ui, sans-serif';
+    for (const series of visibleSeries) {
+      ctx.fillStyle = series.color;
+      ctx.fillRect(lx, ly - 5, 14, 7);
+      ctx.fillStyle = '#d4d4d8';
+      ctx.textAlign = 'left';
+      ctx.fillText(series.label, lx + 18, ly + 2);
+      lx += ctx.measureText(series.label).width + 36;
+    }
+  }
+}
+
+/** Render the ground-truth image: full ray tracing, all lights in one pass. */
+async function renderExperimentReference(app: GPUApp, scene: Scene): Promise<void> {
+  updateDebugUniform(app, 0, 0, 0, false);
+  updateUniforms(app, scene);
+  updateMaterialBuffer(app, scene.materials);
+  updateLightSourceBuffer(app, scene.lightSources);
+
+  const offscreenView = app.offscreenColorTexture.createView();
+  const depthView = app.depthTexture.createView();
+
+  {
+    const enc = app.device.createCommandEncoder();
+    const pass = enc.beginRenderPass({
+      label: 'Experiment reference RT',
+      colorAttachments: [{
+        view: offscreenView,
+        loadOp: 'clear' as const,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        storeOp: 'store' as const,
+      }],
+      depthStencilAttachment: {
+        view: depthView,
+        depthClearValue: 1.0,
+        depthLoadOp: 'clear' as const,
+        depthStoreOp: 'store' as const,
+      },
+    });
+    pass.setPipeline(app.rayTracingPipeline);
+    pass.setBindGroup(0, app.bindGroup);
+    pass.draw(6);
+    pass.end();
+    app.device.queue.submit([enc.finish()]);
+    await app.device.queue.onSubmittedWorkDone();
+  }
+
+  {
+    const enc = app.device.createCommandEncoder();
+    const pass = enc.beginRenderPass({
+      label: 'Experiment reference blit',
+      colorAttachments: [{
+        view: app.context.getCurrentTexture().createView(),
+        loadOp: 'clear' as const,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        storeOp: 'store' as const,
+      }],
+    });
+    pass.setPipeline(app.blitPipeline);
+    pass.setBindGroup(0, app.blitBindGroup);
+    pass.draw(6);
+    pass.end();
+    app.device.queue.submit([enc.finish()]);
+    await app.device.queue.onSubmittedWorkDone();
+  }
+}
+
+/**
+ * Render stochastic lightcuts using an explicit accumulation count.
+ * The caller is responsible for setting scene.time to a desired base value.
+ */
+async function renderExperimentStochastic(app: GPUApp, scene: Scene, accumCount: number): Promise<void> {
+  updateDebugUniform(app, app.lightcutTreeNodeCount, LIGHTCUT_SIZE, 1, false);
+  updateUniforms(app, scene);
+  updateMaterialBuffer(app, scene.materials);
+  updateLightSourceBuffer(app, scene.lightSources);
+
+  const offscreenView = app.offscreenColorTexture.createView();
+  const depthView = app.depthTexture.createView();
+  const accumView = app.accumTexture.createView();
+
+  // Clear accumulation texture
+  {
+    const enc = app.device.createCommandEncoder();
+    const pass = enc.beginRenderPass({
+      label: 'Experiment accum clear',
+      colorAttachments: [{
+        view: accumView,
+        loadOp: 'clear' as const,
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        storeOp: 'store' as const,
+      }],
+    });
+    pass.end();
+    app.device.queue.submit([enc.finish()]);
+    await app.device.queue.onSubmittedWorkDone();
+  }
+
+  for (let p = 0; p < accumCount; p++) {
+    scene.time = (scene.time || 0) + 1;
+    updateUniforms(app, scene);
+
+    // Render pass
+    {
+      const enc = app.device.createCommandEncoder();
+      const pass = enc.beginRenderPass({
+        label: `Experiment stochastic pass ${p}`,
+        colorAttachments: [{
+          view: offscreenView,
+          loadOp: 'clear' as const,
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          storeOp: 'store' as const,
+        }],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1.0,
+          depthLoadOp: 'clear' as const,
+          depthStoreOp: 'store' as const,
+        },
+      });
+      pass.setPipeline(app.rayTracingPipeline);
+      pass.setBindGroup(0, app.bindGroup);
+      pass.draw(6);
+      pass.end();
+      app.device.queue.submit([enc.finish()]);
+      await app.device.queue.onSubmittedWorkDone();
+    }
+
+    // Additive blit into accumulation texture
+    {
+      const enc = app.device.createCommandEncoder();
+      const pass = enc.beginRenderPass({
+        label: `Experiment stochastic accum blit ${p}`,
+        colorAttachments: [{
+          view: accumView,
+          loadOp: 'load' as const,
+          storeOp: 'store' as const,
+        }],
+      });
+      pass.setPipeline(app.accumBlitPipeline);
+      pass.setBindGroup(0, app.accumBlitBindGroup);
+      pass.draw(6);
+      pass.end();
+      app.device.queue.submit([enc.finish()]);
+      await app.device.queue.onSubmittedWorkDone();
+    }
+  }
+
+  // Final blit: divide by accumCount and write to swap chain
+  updateAccumFinalPassCount(app, accumCount);
+  {
+    const enc = app.device.createCommandEncoder();
+    const pass = enc.beginRenderPass({
+      label: 'Experiment stochastic final blit',
+      colorAttachments: [{
+        view: app.context.getCurrentTexture().createView(),
+        loadOp: 'clear' as const,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        storeOp: 'store' as const,
+      }],
+    });
+    pass.setPipeline(app.accumFinalPipeline);
+    pass.setBindGroup(0, app.accumFinalBindGroup);
+    pass.draw(6);
+    pass.end();
+    app.device.queue.submit([enc.finish()]);
+    await app.device.queue.onSubmittedWorkDone();
+  }
+}
+
 async function main(): Promise<void> {
-  console.log('[Main] Starting application');
+  console.log('starting...');
   try {
     const app = await createGPUApp();
     const camAspect = app.canvas.width / app.canvas.height;
-    console.log('[Main] Canvas aspect ratio =', camAspect);
     const shaderResponse = await fetch('shaders.wgsl');
-    console.log('[Main] shaders.wgsl HTTP status =', shaderResponse.status);
     const shaderCode = await shaderResponse.text();
     initRenderPipeline(app, shaderCode);
     initAccumulationResources(app);
@@ -538,10 +852,34 @@ async function main(): Promise<void> {
     const sceneSelect = document.getElementById('scene_select') as HTMLSelectElement | null;
     const getSceneName = (): string => (sceneSelect && sceneSelect.value) || 'ram';
     let scene = await createScene(camAspect, getSceneName());
-    console.log('[Main] Scene ready, meshes:', scene.meshes.length, 'lights:', scene.lightSources.length);
+    console.log('scene loaded, meshes:', scene.meshes.length, 'lights:', scene.lightSources.length);
     let animationFrameId: number | null = null;
     let isRendering = false;
     let lightcutTree: LightcutNode | null = null;
+    let currentTreeType: 'kd' | 'perfect' = 'kd';
+
+    async function ensureCorrectTree(): Promise<void> {
+      const rt = getRenderingType();
+      if (rt === 'realtime_stochastic_lightcuts' && currentTreeType !== 'perfect') {
+        const { data, nodeCount } = buildPerfectBinaryTreeForGPU(scene.lightSources);
+        uploadLightcutTree(app, data, nodeCount);
+        currentTreeType = 'perfect';
+      } else if ((rt === 'lightcuts' || rt === 'stochastic_lightcuts') && currentTreeType !== 'kd') {
+        lightcutTree = buildLightcutTreeKDTree(scene.lightSources, 'spatial');
+        if (lightcutTree) {
+          const { data, nodeCount } = flattenTreeForGPU(lightcutTree);
+          uploadLightcutTree(app, data, nodeCount);
+        }
+        currentTreeType = 'kd';
+      }
+      if (rt === 'realtime_stochastic_lightcuts' && app.lightcutTreeNodeCount > 0) {
+        const tileSize = getTileSize();
+        const invViewMat = mat4Invert(scene.camera.viewMat);
+        const { data } = buildPerfectBinaryTreeForGPU(scene.lightSources);
+        const cuts = buildCutsForTiles(data, app.lightcutTreeNodeCount, app.canvas.width, app.canvas.height, tileSize, invViewMat, scene.camera.fov, scene.camera.aspect);
+        uploadTileCuts(app, cuts);
+      }
+    }
 
     // Auto-build lightcut tree for initial scene (moved down)
 
@@ -570,16 +908,15 @@ async function main(): Promise<void> {
 
     initEvents(app, () => scene, triggerRender);
     initGPUBuffers(app, scene);
-    console.log('[Main] GPU buffers initialized');
 
-    // Auto-build lightcut tree for initial scene
     lightcutTree = buildLightcutTreeKDTree(scene.lightSources, 'spatial');
     {
       const { data, nodeCount } = flattenTreeForGPU(lightcutTree);
       uploadLightcutTree(app, data, nodeCount);
-      console.log(`[Main] Auto-built lightcut tree (spatial): ${nodeCount} nodes`);
+      console.log(`lightcut tree built: ${nodeCount} nodes`);
     }
 
+    await ensureCorrectTree();
     await renderScene(app, scene);
 
     const renderingTypeSelect = document.getElementById('rendering_type_select') as HTMLSelectElement | null;
@@ -596,6 +933,23 @@ async function main(): Promise<void> {
       renderingTypeSelect.addEventListener('change', onRenderingTypeChange);
     }
 
+    const tileSizeSlider = document.getElementById('cut_sharing_tile_size') as HTMLInputElement | null;
+    const tileSizeValue = document.getElementById('cut_sharing_tile_size_value');
+    if (tileSizeSlider) {
+      tileSizeSlider.addEventListener('input', () => {
+        if (tileSizeValue) tileSizeValue.textContent = tileSizeSlider.value;
+      });
+      tileSizeSlider.addEventListener('change', async () => {
+        if (getRenderingType() === 'realtime_stochastic_lightcuts' && !isRendering) {
+          isRendering = true;
+          await ensureCorrectTree();
+          await renderScene(app, scene);
+          isRendering = false;
+        }
+      });
+      if (tileSizeValue) tileSizeValue.textContent = tileSizeSlider.value;
+    }
+
     const fullbrightCheckbox = document.getElementById('fullbright_checkbox') as HTMLInputElement | null;
     if (fullbrightCheckbox) {
       fullbrightCheckbox.addEventListener('change', async () => {
@@ -603,6 +957,7 @@ async function main(): Promise<void> {
         if (useRT) {
           if (!isRendering) {
             isRendering = true;
+            await ensureCorrectTree();
             await renderScene(app, scene);
             isRendering = false;
           }
@@ -631,6 +986,7 @@ async function main(): Promise<void> {
       renderButton.addEventListener('click', async () => {
         if (!isRendering) {
           isRendering = true;
+          await ensureCorrectTree();
           await renderScene(app, scene);
           isRendering = false;
         }
@@ -653,13 +1009,15 @@ async function main(): Promise<void> {
           {
             const { data, nodeCount } = flattenTreeForGPU(lightcutTree);
             uploadLightcutTree(app, data, nodeCount);
-            console.log(`[Main] Auto-built lightcut tree (spatial): ${nodeCount} nodes`);
+            currentTreeType = 'kd';
+            console.log(`lightcut tree rebuilt: ${nodeCount} nodes`);
           }
 
+          await ensureCorrectTree();
           await renderScene(app, scene);
           if (!isRayTracingEnabled()) renderLoop();
         } catch (e) {
-          console.error('[Main] Scene load failed:', e);
+          console.error('scene load failed:', e);
         }
       });
     }
@@ -692,9 +1050,7 @@ async function main(): Promise<void> {
       });
     });
 
-    // ─── Lightcut Tree tab ─────────────────────────────────────────────────
-    // ─── Lightcut Tree tab ─────────────────────────────────────────────────
-
+    // Lightcut visualization canvas setup
     // Lightweight GPU context for the lightcut visualization canvas.
     interface LightcutGPUCtx {
       canvas: HTMLCanvasElement;
@@ -813,7 +1169,7 @@ async function main(): Promise<void> {
     // Render the lightcut visualization
     async function renderLightcutViz(depth: number): Promise<void> {
       if (!lightcutTree) {
-        console.warn('[Lightcut] No tree built yet');
+        console.warn('no lightcut tree built yet');
         return;
       }
       const lcGPU = await initLightcutGPU();
@@ -912,7 +1268,7 @@ async function main(): Promise<void> {
     if (lightcutBuildBtn) {
       lightcutBuildBtn.addEventListener('click', async () => {
         if (!scene.lightSources || scene.lightSources.length === 0) {
-          console.warn('[Lightcut] No lights in scene');
+          console.warn('no lights in scene');
           return;
         }
         lightcutBuildBtn.disabled = true;
@@ -937,7 +1293,7 @@ async function main(): Promise<void> {
         // Serialize tree to GPU and upload
         const { data: treeData, nodeCount } = flattenTreeForGPU(lightcutTree);
         uploadLightcutTree(app, treeData, nodeCount);
-        console.log(`[Lightcut] Tree built: ${nodeCount} nodes, maxDepth=${maxDepth}, uploaded to GPU`);
+        console.log(`tree: ${nodeCount} nodes, maxDepth=${maxDepth}`);
 
         if (lightcutMaxDepthEl) lightcutMaxDepthEl.textContent = String(maxDepth);
         if (lightcutTotalLightsEl) lightcutTotalLightsEl.textContent = String(scene.lightSources.length);
@@ -953,7 +1309,7 @@ async function main(): Promise<void> {
         lightcutBuildBtn.disabled = false;
         lightcutBuildBtn.textContent = 'Build Tree';
 
-        console.log(`[Lightcut] Built ${method} tree: maxDepth=${maxDepth}, lights=${scene.lightSources.length}, time=${buildTime.toFixed(1)}ms`);
+        console.log(`${method} tree: maxDepth=${maxDepth}, lights=${scene.lightSources.length}, time=${buildTime.toFixed(1)}ms`);
 
         await renderLightcutViz(0);
       });
@@ -1040,36 +1396,34 @@ async function main(): Promise<void> {
         }
         // Wait for any in-flight render to finish
         if (isRendering) {
-          console.log('[Testing] Waiting for current render to finish…');
+          console.log('waiting for render to finish...');
           await new Promise<void>(resolve => {
             const check = () => { if (!isRendering) resolve(); else setTimeout(check, 50); };
             check();
           });
         }
         const numImages = Math.max(1, parseInt(fullLightsNumImagesSlider?.value || '10', 10));
-        console.log('[Testing] Starting generation of', numImages, 'images');
+        console.log('generating', numImages, 'images...');
         isRendering = true;
         fullLightsRunBtn.disabled = true;
         fullLightsGrid.innerHTML = '';
         if (fullLightsLastRun) fullLightsLastRun.textContent = 'Running…';
 
         try {
-          const { times } = await runFullLightsTraining(app, scene, numImages, {
-            onImage(index: number, dataUrl: string) {
-              const img = document.createElement('img');
-              img.src = dataUrl;
-              img.alt = `Frame ${index + 1}`;
-              img.className = 'training-thumb';
-              fullLightsGrid.appendChild(img);
-            },
+          const { times } = await runFullLightsTraining(app, scene, numImages, (index, dataUrl) => {
+            const img = document.createElement('img');
+            img.src = dataUrl;
+            img.alt = `Frame ${index + 1}`;
+            img.className = 'training-thumb';
+            fullLightsGrid.appendChild(img);
           });
 
           const avg = times.length ? times.reduce((a, b) => a + b, 0) / times.length : 0;
           if (fullLightsAvgMs) fullLightsAvgMs.textContent = avg.toFixed(2);
           if (fullLightsLastRun) fullLightsLastRun.textContent = times.map((t) => t.toFixed(0) + ' ms').join(', ');
-          console.log('[FullLights] Done. Average time:', avg.toFixed(2), 'ms');
+          console.log('done. avg time:', avg.toFixed(2), 'ms');
         } catch (err) {
-          console.error('[FullLights] Error:', err);
+          console.error('error during image generation:', err);
           if (fullLightsLastRun) fullLightsLastRun.textContent = 'Error: ' + ((err as Error).message || String(err));
         } finally {
           isRendering = false;
@@ -1077,8 +1431,95 @@ async function main(): Promise<void> {
         }
       });
     }
+    // Experiments tab
+    const expAccuracyRunBtn = document.getElementById('exp_accuracy_run_btn') as HTMLButtonElement | null;
+    const expAccuracyChart = document.getElementById('exp_accuracy_chart') as HTMLCanvasElement | null;
+    const expAccuracyStatus = document.getElementById('exp_accuracy_status');
+    const expAccuracyRefImg = document.getElementById('exp_accuracy_ref_img') as HTMLImageElement | null;
+
+    if (expAccuracyRunBtn && expAccuracyChart) {
+      // Draw placeholder chart immediately so the canvas is not blank
+      drawMSEChart(expAccuracyChart, []);
+
+      expAccuracyRunBtn.addEventListener('click', async () => {
+        if (isRendering) return;
+
+        // Stop any running render loop
+        if (animationFrameId) {
+          cancelAnimationFrame(animationFrameId);
+          animationFrameId = null;
+        }
+
+        isRendering = true;
+        expAccuracyRunBtn.disabled = true;
+        if (expAccuracyStatus) expAccuracyStatus.textContent = 'Setting up…';
+
+        const savedTime = scene.time ?? 0;
+
+        try {
+          // Fix a random camera angle for the whole experiment
+          setCameraRandomNorthHemisphere(scene);
+
+          // Ensure a KD-tree is uploaded (needed for stochastic lightcuts)
+          if (currentTreeType !== 'kd' || !app.lightcutTreeNodeCount) {
+            lightcutTree = buildLightcutTreeKDTree(scene.lightSources, 'spatial');
+            const { data, nodeCount } = flattenTreeForGPU(lightcutTree);
+            uploadLightcutTree(app, data, nodeCount);
+            currentTreeType = 'kd';
+          }
+
+          // Render ground-truth (full ray tracing, all lights, one pass)
+          if (expAccuracyStatus) expAccuracyStatus.textContent = 'Rendering ground truth…';
+          await renderExperimentReference(app, scene);
+          const refPixels = getCanvasPixels(app.canvas);
+          if (expAccuracyRefImg) {
+            expAccuracyRefImg.src = getCanvasDataURL(app.canvas);
+            expAccuracyRefImg.hidden = false;
+          }
+
+          // Accumulation counts: 2, 4, 6, …, 32
+          const accumCounts: number[] = [];
+          for (let c = 2; c <= 32; c += 2) accumCounts.push(c);
+
+          const series: ChartSeries = {
+            label: 'Stochastic lightcuts',
+            color: '#3b82f6',
+            data: [],
+          };
+
+          for (let i = 0; i < accumCounts.length; i++) {
+            const count = accumCounts[i]!;
+            if (expAccuracyStatus) expAccuracyStatus.textContent = `Accumulation ${count} / 32…`;
+
+            // Use a unique time base per sub-test so samples are independent
+            scene.time = i * 200;
+            await renderExperimentStochastic(app, scene, count);
+
+            const pixels = getCanvasPixels(app.canvas);
+            const mse = computeMSE(refPixels, pixels);
+            series.data.push({ x: count, y: mse });
+
+            drawMSEChart(expAccuracyChart, [series]);
+
+            // Yield to the browser between sub-tests
+            await new Promise<void>(r => setTimeout(r, 0));
+          }
+
+          if (expAccuracyStatus) expAccuracyStatus.textContent = `Done — ${accumCounts.length} points collected.`;
+
+        } catch (err) {
+          console.error('Experiment error:', err);
+          if (expAccuracyStatus) expAccuracyStatus.textContent = 'Error: ' + String(err);
+        } finally {
+          scene.time = savedTime;
+          isRendering = false;
+          expAccuracyRunBtn.disabled = false;
+        }
+      });
+    }
+
   } catch (err) {
-    console.error('[Main] Fatal error during initialization:', err);
+    console.error('fatal error during init:', err);
   }
 }
 
