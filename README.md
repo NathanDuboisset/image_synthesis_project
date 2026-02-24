@@ -4,6 +4,8 @@ A WebGPU-based renderer implementing Ray Tracing, Lightcuts, and Stochastic Ligh
  
 Interface self explanatory, you can change modes to test the different parts of the experiment in 3 tabs : playground to test and see, a tab to test on average to look for the speed results, and a tab to visualize the lightcut tree.
 
+For better code comprehension, i decided to split the file and have them in typescript instead of javascript :)
+
 ## How to Run
 
 0. **IF ALREADY BUILT:**

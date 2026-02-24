@@ -1,4 +1,6 @@
+import './inlineAssets.ts';
 import type { GPUApp, Scene, RenderMethod, RenderingType, LightcutNode, MeshBuffers, LightSource } from './types.ts';
+import shaderCode from '../shaders.wgsl';
 import { createScene, setCameraRandomNorthHemisphere } from './scene.ts';
 import {
   createGPUApp, initRenderPipeline, initGPUBuffers, updateUniforms,
@@ -844,8 +846,6 @@ async function main(): Promise<void> {
   try {
     const app = await createGPUApp();
     const camAspect = app.canvas.width / app.canvas.height;
-    const shaderResponse = await fetch('shaders.wgsl');
-    const shaderCode = await shaderResponse.text();
     initRenderPipeline(app, shaderCode);
     initAccumulationResources(app);
 
