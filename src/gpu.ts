@@ -80,10 +80,7 @@ export function fillLightSourceStagingBuffer(app: GPUApp, lightSources: LightSou
     const l = lightSources[i]!;
     const offset = i * sizeOfLightSource;
 
-    // Use the actual intensity from the scene configuration for all modes
-    // previously it was clamped to 0.05 for raster, which prevented high-intensity lights from working
     let intensity = l.intensity;
-    // If running RT and this light is flagged to be hidden in RT, Zero its intensity
     if (useRT && l.visibleInRT === false) {
       intensity = 0.0;
     }
