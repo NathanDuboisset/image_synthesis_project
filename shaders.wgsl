@@ -81,7 +81,7 @@ struct LightcutGPUNode {
 
 @group(0) @binding(8) var<storage, read> lightcutTree : array<LightcutGPUNode>;
 
-// Tile cut buffer: stride = 1 + LC_MAX_CUT u32s per tile. [0]=cutSize, [1..]=nodeIndices.
+// Tile cut buffer: [cutSize, node indices…].
 const TILE_CUT_STRIDE = 33u;
 @group(0) @binding(9) var<storage, read> tileCutBuffer : array<u32>;
 
@@ -236,7 +236,7 @@ fn shadeLightcutNode(
   return radiance * fr * max(0.0, dot(wi, viewNormal));
 }
 
-// Error bound for a lightcut node (importance + geometric)
+// Simple error bound for one lightcut node.
 fn lightcutErrorBound(node: LightcutGPUNode, worldPos: vec3f) -> f32 {
   let L = node.position - worldPos;
   let distSq = dot(L, L) + 0.001;
@@ -245,7 +245,7 @@ fn lightcutErrorBound(node: LightcutGPUNode, worldPos: vec3f) -> f32 {
   return node.intensity / distSq * diag / dist;
 }
 
-// Greedy traversal of the lightcut tree
+// Greedy traversal of the lightcut tree.
 fn computeRadianceLightcuts(
   worldPos: vec3f,
   worldNormal: vec3f,
@@ -257,9 +257,9 @@ fn computeRadianceLightcuts(
   let nodeCount = debugParams.lightcutNodeCount;
   let maxCut = min(debugParams.maxCutSize, LC_MAX_CUT);
 
-  // Cut stored as fixed-size arrays (WGSL requires compile-time size)
+  // Fixed-size arrays for the current cut (WGSL quirk).
   var cutIdx:   array<u32, 32>;   // node indices
-  var cutError: array<f32, 32>;   // cached error bounds
+  var cutError: array<f32, 32>;   // error bounds
   var cutSize: u32 = 0u;
 
   if (nodeCount == 0u) {
@@ -471,7 +471,7 @@ fn pcg_hash(seed: u32) -> u32 {
     return (word >> 22u) ^ word;
 }
 
-// Random float [0, 1)
+// Random float in [0, 1).
 fn rand(seed: ptr<function, u32>) -> f32 {
     *seed = pcg_hash(*seed);
     return f32(*seed) / 4294967296.0;
@@ -486,8 +486,8 @@ fn dMaxToAABB(p: vec3f, bmin: vec3f, bmax: vec3f) -> f32 {
     return length(max(abs(p - bmin), abs(p - bmax)));
 }
 
-// Algorithm 1 from Yuksel 2019: hierarchical importance sampling within a subtree.
-// Returns vec2f(f32(leafNodeIdx), selectionProbability), or vec2f(-1.0, p) on dead branch.
+// Hierarchical importance sampling inside one subtree.
+// Returns vec2f(leafIndex, selectionProbability) or vec2f(-1.0, p) if we bail out.
 fn selectLight(rootIdx: u32, worldPos: vec3f, nodeCount: u32,
                seed: ptr<function, u32>) -> vec2f {
     var nodeId = rootIdx;
@@ -528,7 +528,7 @@ fn selectLight(rootIdx: u32, worldPos: vec3f, nodeCount: u32,
     return vec2f(f32(nodeId), p);
 }
 
-// Lin & Yuksel 2020 (Section 3.2): weight = average of pmin (1/dmin²) and pmax (1/dmax²).
+// RT variant: average of near/far distance weights.
 fn selectLightRT(rootIdx: u32, worldPos: vec3f, nodeCount: u32,
                  seed: ptr<function, u32>) -> vec2f {
     var nodeId = rootIdx;
@@ -587,7 +587,7 @@ fn computeRadianceStochasticLightcuts(
 
   var seed = pcg_hash(u32(screenPos.x * 1000.0) ^ u32(screenPos.y * 1000.0) ^ u32(scene.frameCount));
 
-  // Phase 1: build cut (identical to computeRadianceLightcuts)
+  // Phase 1: build the cut (like computeRadianceLightcuts).
   var cutIdx:   array<u32, 32>;
   var cutError: array<f32, 32>;
   var cutSize = 0u;
@@ -617,7 +617,7 @@ fn computeRadianceStochasticLightcuts(
     }
   }
 
-  // Phase 2: one HIS sample per cut node, contributions summed (no averaging)
+  // Phase 2: one sample per cut node, sum contributions.
   var color = vec3f(0.0);
   for (var c = 0u; c < cutSize; c++) {
     let res  = selectLight(cutIdx[c], worldPos, nodeCount, &seed);
@@ -632,7 +632,7 @@ fn computeRadianceStochasticLightcuts(
   return color;
 }
 
-// Phase 2 only: reads CPU-prebuilt tile cut, runs HIS with Lin 2020 weights (selectLightRT).
+// Phase 2 only: use CPU-built tile cut with selectLightRT.
 fn computeRadianceRealtimeStochasticLightcuts(
   worldPos: vec3f,
   worldNormal: vec3f,
@@ -692,12 +692,12 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
   let n2 = getVertNormal(mesh.posOffset + tri.z);
   let worldNormal = normalize(uvw.z * n0 + uvw.x * n1 + uvw.y * n2);
 
-  // DEBUG 3: Show Normals
+  // DEBUG 3: show normals.
   if (debugMode == 3u) {
       return vec4f(worldNormal * 0.5 + 0.5, 1.0);
   }
 
-  // DEBUG 2: Show Albedo
+  // DEBUG 2: show albedo.
   let m = materials[mesh.materialIndex];
   if (debugMode == 2u) {
       return vec4f(m.albedo, 1.0);
@@ -728,7 +728,7 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
     return vec4f(outputColor, 1.0);
   }
 
-  // Use light range from uniforms (supports accumulation passes)
+  // Use light range from uniforms (for accumulation).
   let startIdx = u32(scene.lightStartIndex);
   let endIdx = u32(scene.lightEndIndex);
 
@@ -766,9 +766,8 @@ fn shadeRT(hit: Hit, fragCoord: vec4f) -> vec4f {
     }
   }
 
- // DEBUG 1: Heatmap (White = 50 lights visible, Black = 0)
+ // DEBUG 1: simple visibility heatmap.
  if (debugMode == 1u) {
-  // Keep some base visibility so geometry is never pure black.
   let base = 0.2;
   let heat = clamp(visibleCount / 100.0, 0.0, 1.0);
   let v = base + (1.0 - base) * heat;

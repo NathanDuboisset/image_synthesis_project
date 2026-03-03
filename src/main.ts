@@ -14,11 +14,10 @@ import { mat4Invert, mat4Transpose } from './math.ts';
 import { buildLightcutTreeBruteForce, buildLightcutTreeKDTree, getNodesAtDepth, getTreeMaxDepth, flattenTreeForGPU, buildPerfectBinaryTreeForGPU, buildCutsForTiles } from './lightcutTree.ts';
 import { createBBoxMeshes, createIntensityMaterials } from './lightcutViz.ts';
 
-// Tile ratio controlling ray-tracing tile size vs. light count:
-// tileSize ≈ TILERATIO / numLights, clamped to [32, 256].
+// Heuristic for RT tile size vs. light count.
 const TILERATIO = 128000;
 
-/** Default maximum cut size for per-pixel lightcuts (configurable via future slider). */
+// Default per-pixel lightcut size.
 let LIGHTCUT_SIZE = 16;
 
 function getSelectedRenderMethod(): RenderMethod {
@@ -42,7 +41,7 @@ function isRayTracingEnabled(): boolean {
       || t === 'realtime_stochastic_lightcuts';
 }
 
-/** Get the current canvas content as a data URL. */
+// Grab current canvas as PNG data URL.
 function getCanvasDataURL(canvas: HTMLCanvasElement): string {
   return canvas.toDataURL('image/png');
 }
